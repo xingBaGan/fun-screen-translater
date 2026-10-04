@@ -19,6 +19,10 @@ interface Props {
   onSelectPage: (index: number) => void;
   onPickImage: () => void;
   onOpenSettings: () => void;
+  onScanVision?: () => void;
+  isScanningVision?: boolean;
+  onTranslatePage?: () => void;
+  isTranslatingPage?: boolean;
 }
 
 export const ControlToolbar: React.FC<Props> = ({
@@ -29,6 +33,10 @@ export const ControlToolbar: React.FC<Props> = ({
   onSelectPage,
   onPickImage,
   onOpenSettings,
+  onScanVision,
+  isScanningVision,
+  onTranslatePage,
+  isTranslatingPage,
 }) => {
   const insets = useSafeAreaInsets();
   // 底部安全边距：适配 Android 虚拟按键（3键导航）、手势条及 iOS Home Indicator
@@ -84,6 +92,43 @@ export const ControlToolbar: React.FC<Props> = ({
         </ScrollView>
 
         <View style={styles.actionIcons}>
+          {onTranslatePage && (
+            <TouchableOpacity
+              style={[
+                styles.translateButton,
+                isTranslatingPage && styles.translateButtonDisabled,
+              ]}
+              onPress={onTranslatePage}
+              disabled={isTranslatingPage}
+              activeOpacity={0.75}
+            >
+              <Ionicons
+                name={isTranslatingPage ? 'reload' : 'language-outline'}
+                size={14}
+                color="#FFFFFF"
+              />
+              <Text style={styles.translateButtonText}>
+                {isTranslatingPage ? '翻译中' : 'AI翻译'}
+              </Text>
+            </TouchableOpacity>
+          )}
+          {onScanVision && (
+            <TouchableOpacity
+              style={[styles.visionButton, isScanningVision && styles.visionButtonDisabled]}
+              onPress={onScanVision}
+              disabled={isScanningVision}
+              activeOpacity={0.75}
+            >
+              <Ionicons
+                name={isScanningVision ? 'reload' : 'sparkles'}
+                size={14}
+                color="#FFFFFF"
+              />
+              <Text style={styles.visionButtonText}>
+                {isScanningVision ? '扫描中' : 'AI补全'}
+              </Text>
+            </TouchableOpacity>
+          )}
           <TouchableOpacity
             style={styles.iconButton}
             onPress={onPickImage}
@@ -185,6 +230,50 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     borderWidth: 1,
     borderColor: '#E2E8F0',
+  },
+  translateButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 10,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: '#0284C7',
+    gap: 4,
+    shadowColor: '#0284C7',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.3,
+    shadowRadius: 3,
+    elevation: 3,
+  },
+  translateButtonDisabled: {
+    opacity: 0.6,
+  },
+  translateButtonText: {
+    color: '#FFFFFF',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  visionButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 10,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: '#EA580C',
+    gap: 4,
+    shadowColor: '#EA580C',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.3,
+    shadowRadius: 3,
+    elevation: 3,
+  },
+  visionButtonDisabled: {
+    opacity: 0.6,
+  },
+  visionButtonText: {
+    color: '#FFFFFF',
+    fontSize: 12,
+    fontWeight: '700',
   },
   bottomTabs: {
     flexDirection: 'row',

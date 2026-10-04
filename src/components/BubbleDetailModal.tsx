@@ -16,13 +16,16 @@ interface Props {
   bubble: TextBubble | null;
   visible: boolean;
   onClose: () => void;
+  onRetranslateBubble?: (bubble: TextBubble) => Promise<void>;
 }
 
 export const BubbleDetailModal: React.FC<Props> = ({
   bubble,
   visible,
   onClose,
+  onRetranslateBubble,
 }) => {
+  const [isRetranslating, setIsRetranslating] = React.useState(false);
   const insets = useSafeAreaInsets();
   const bottomPadding = Math.max(
     insets.bottom + 16,
@@ -48,12 +51,23 @@ export const BubbleDetailModal: React.FC<Props> = ({
             <View style={styles.badgeRow}>
               <View style={styles.orderBadge}>
                 <Text style={styles.orderBadgeText}>
-                  气泡 #{bubble.readingOrderIndex}
+                  #{bubble.readingOrderIndex}
                 </Text>
               </View>
               <View style={styles.directionBadge}>
                 <Text style={styles.directionBadgeText}>
-                  {bubble.direction === 'vertical' ? '日漫竖排' : '横排'}
+                  {bubble.textType === 'title'
+                    ? '🏷️ 画面标题'
+                    : bubble.textType === 'sfx'
+                    ? '💥 拟声词'
+                    : bubble.textType === 'free_text'
+                    ? '📝 旁白嵌字'
+                    : '💬 对白气泡'}
+                </Text>
+              </View>
+              <View style={styles.directionBadge}>
+                <Text style={styles.directionBadgeText}>
+                  {bubble.direction === 'vertical' ? '竖排' : '横排'}
                 </Text>
               </View>
               {bubble.confidence && (
@@ -101,10 +115,34 @@ export const BubbleDetailModal: React.FC<Props> = ({
 
           {/* 底部操作区 */}
           <View style={styles.actionRow}>
+            {onRetranslateBubble && (
+              <TouchableOpacity
+                style={[styles.actionButton, styles.retranslateButton]}
+                disabled={isRetranslating}
+                onPress={async () => {
+                  if (isRetranslating) return;
+                  setIsRetranslating(true);
+                  try {
+                    await onRetranslateBubble(bubble);
+                  } finally {
+                    setIsRetranslating(false);
+                  }
+                }}
+              >
+                <Ionicons
+                  name={isRetranslating ? 'reload' : 'sparkles-outline'}
+                  size={18}
+                  color="#0284C7"
+                />
+                <Text style={styles.actionButtonText}>
+                  {isRetranslating ? '翻译中...' : 'AI重新翻译'}
+                </Text>
+              </TouchableOpacity>
+            )}
+
             <TouchableOpacity
               style={styles.actionButton}
               onPress={() => {
-                // 模拟朗读/TTS
                 alert(`朗读原文: ${bubble.sourceText}`);
               }}
             >
@@ -235,19 +273,23 @@ const styles = StyleSheet.create({
   },
   actionRow: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
     alignItems: 'center',
     marginTop: 8,
-    gap: 12,
+    gap: 8,
   },
   actionButton: {
     flexDirection: 'row',
     alignItems: 'center',
     paddingVertical: 10,
-    paddingHorizontal: 16,
+    paddingHorizontal: 10,
     borderRadius: 10,
     backgroundColor: '#E0F2FE',
-    gap: 6,
+    gap: 4,
+  },
+  retranslateButton: {
+    backgroundColor: '#EFF6FF',
+    borderWidth: 1,
+    borderColor: '#BFDBFE',
   },
   actionButtonText: {
     color: '#0284C7',

@@ -2,12 +2,17 @@ package expo.modules.screentranslator
 
 import android.content.Context
 import android.content.Intent
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
 import expo.modules.kotlin.Promise
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 
 class ScreenTranslatorOverlayModule : Module() {
 
@@ -27,14 +32,20 @@ class ScreenTranslatorOverlayModule : Module() {
       }
     }
 
-    fun emitScreenCaptured(filePath: String, width: Int, height: Int) {
+    fun emitScreenCaptured(
+      filePath: String,
+      width: Int,
+      height: Int,
+      detectedBubbles: List<Map<String, Any>> = emptyList()
+    ) {
       instance?.sendEvent(
         "onScreenCaptured",
         mapOf(
           "uri" to "file://$filePath",
           "width" to width,
           "height" to height,
-          "timestamp" to System.currentTimeMillis()
+          "timestamp" to System.currentTimeMillis(),
+          "detectedBubbles" to detectedBubbles
         )
       )
     }
@@ -126,6 +137,63 @@ class ScreenTranslatorOverlayModule : Module() {
       val context = appContext.reactContext ?: return@Function false
       ScreenCaptureOverlayService.stop(context)
       true
+    }
+
+    AsyncFunction("recognizeImage") { imageUri: String, lang: String?, promise: Promise ->
+      val context = appContext.reactContext
+      if (context == null) {
+        promise.reject("CONTEXT_NULL", "React Context 不可用", null)
+        return@AsyncFunction
+      }
+
+      CoroutineScope(Dispatchers.IO).launch {
+        var bitmap: Bitmap? = null
+        try {
+          // 稳健支持 content://, file:// 及本地绝对路径
+          bitmap = try {
+            if (imageUri.startsWith("content://")) {
+              context.contentResolver.openInputStream(Uri.parse(imageUri))?.use {
+                BitmapFactory.decodeStream(it)
+              }
+            } else {
+              val cleanPath = if (imageUri.startsWith("file://")) {
+                Uri.parse(imageUri).path ?: imageUri.removePrefix("file://")
+              } else {
+                imageUri
+              }
+              val file = java.io.File(cleanPath)
+              if (file.exists()) {
+                BitmapFactory.decodeFile(file.absolutePath)
+              } else {
+                context.contentResolver.openInputStream(Uri.parse(imageUri))?.use {
+                  BitmapFactory.decodeStream(it)
+                }
+              }
+            }
+          } catch (e: Exception) {
+            null
+          }
+
+          if (bitmap == null) {
+            promise.reject("DECODE_FAILED", "无法解码指定图片: $imageUri", null)
+            return@launch
+          }
+
+          val bubbles = MangaOcrProcessor.processImage(bitmap, lang ?: "ja")
+          val response = mapOf(
+            "width" to bitmap.width,
+            "height" to bitmap.height,
+            "bubbles" to bubbles
+          )
+          promise.resolve(response)
+        } catch (e: Exception) {
+          promise.reject("OCR_ERROR", e.message ?: "文字定位识别发生异常", e)
+        } finally {
+          try {
+            bitmap?.recycle()
+          } catch (e: Exception) {}
+        }
+      }
     }
 
     Function("captureScreen") {

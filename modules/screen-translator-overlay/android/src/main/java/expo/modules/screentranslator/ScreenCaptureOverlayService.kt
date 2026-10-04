@@ -25,6 +25,10 @@ import android.view.WindowManager
 import androidx.core.app.NotificationCompat
 import java.io.File
 import java.io.FileOutputStream
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+
 
 class ScreenCaptureOverlayService : Service() {
 
@@ -257,22 +261,36 @@ class ScreenCaptureOverlayService : Service() {
       fos.flush()
       fos.close()
 
-      finishCapture(outputFile.absolutePath, screenWidth, screenHeight)
+      // 端侧 Google ML Kit 离线文字定位与气泡聚类 (30~50ms，极速 0 成本)
+      CoroutineScope(Dispatchers.Default).launch {
+        val detectedBubbles = try {
+          MangaOcrProcessor.processImage(croppedBitmap)
+        } catch (e: Exception) {
+          e.printStackTrace()
+          emptyList()
+        }
+        finishCapture(outputFile.absolutePath, screenWidth, screenHeight, detectedBubbles)
+      }
     } catch (e: Exception) {
       e.printStackTrace()
-      finishCapture(null, 0, 0)
+      finishCapture(null, 0, 0, emptyList())
     }
   }
 
-  private fun finishCapture(filePath: String?, width: Int, height: Int) {
+  private fun finishCapture(
+    filePath: String?,
+    width: Int,
+    height: Int,
+    detectedBubbles: List<Map<String, Any>> = emptyList()
+  ) {
     mainHandler.post {
       floatingOverlayView?.setBallVisibility(true)
-      floatingOverlayView?.setBallState("就绪", false)
+      floatingOverlayView?.setBallState("识别完成", false)
       isCapturing = false
 
       if (filePath != null) {
-        // 通知 React Native 端截屏就绪，启动 OCR 及漫画气泡翻译
-        ScreenTranslatorOverlayModule.emitScreenCaptured(filePath, width, height)
+        // 通知 React Native 端截屏与端侧气泡定位就绪，交由大模型批量翻译
+        ScreenTranslatorOverlayModule.emitScreenCaptured(filePath, width, height, detectedBubbles)
       }
     }
   }

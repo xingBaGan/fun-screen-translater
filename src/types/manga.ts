@@ -5,6 +5,8 @@ export interface BoundingBox {
   height: number;
 }
 
+export type ComicTextType = 'bubble' | 'free_text' | 'title' | 'sfx';
+
 export interface TextBubble {
   id: string;
   box: BoundingBox;
@@ -16,6 +18,8 @@ export interface TextBubble {
   detectedBgColor: string;
   detectedTextColor?: string;
   confidence?: number;
+  textType?: ComicTextType;
+  fontSize?: number;
   notes?: string;
 }
 
@@ -31,7 +35,7 @@ export interface MangaPage {
 export type DisplayMode = 'replace' | 'dots' | 'slider' | 'original';
 
 export interface TranslatorConfig {
-  provider: 'mock' | 'deepseek' | 'openai' | 'deepl';
+  provider: 'mock' | 'deepseek' | 'openai' | 'deepl' | 'sakura' | 'gemini';
   apiKey: string;
   apiEndpoint: string;
   model: string;

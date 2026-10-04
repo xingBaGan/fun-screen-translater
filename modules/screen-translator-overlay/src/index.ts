@@ -4,6 +4,7 @@ import {
   CapturedScreenEvent,
   ServiceStateEvent,
   OverlayBubbleItem,
+  RecognizeImageResult,
   Subscription,
 } from './ScreenTranslatorOverlay.types';
 
@@ -139,6 +140,46 @@ export function updateTranslationResult(bubbles: OverlayBubbleItem[]): boolean {
     return Boolean(NativeModule.updateTranslationResult(jsonStr));
   } catch {
     return false;
+  }
+}
+
+/**
+ * 调用端侧 Google ML Kit 离线识别指定本地图片的文字与气泡位置 (包含对白气泡、画面标题、旁白、拟声词)
+ */
+export async function recognizeImage(
+  imageUri: string,
+  lang: string = 'ja'
+): Promise<RecognizeImageResult> {
+  if (!NativeModule || typeof NativeModule.recognizeImage !== 'function') {
+    console.warn(
+      '[ScreenOverlay] 原生 recognizeImage 方法未在当前运行的 APK 中找到。请运行 "npx expo run:android" 编译最新原生代码。'
+    );
+    return {
+      width: 0,
+      height: 0,
+      bubbles: [],
+      error: 'NATIVE_REBUILD_REQUIRED',
+    };
+  }
+
+  try {
+    const res = await NativeModule.recognizeImage(imageUri, lang);
+    if (Array.isArray(res)) {
+      return { width: 0, height: 0, bubbles: res };
+    }
+    return {
+      width: res?.width || 0,
+      height: res?.height || 0,
+      bubbles: res?.bubbles || [],
+    };
+  } catch (err: any) {
+    console.warn('[ScreenOverlay] recognizeImage 执行失败:', err);
+    return {
+      width: 0,
+      height: 0,
+      bubbles: [],
+      error: err?.message || 'OCR_ERROR',
+    };
   }
 }
 

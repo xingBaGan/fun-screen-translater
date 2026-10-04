@@ -13,12 +13,13 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { TranslatorConfig } from '@/types/manga';
+import { testTranslatorConnection, normalizeModelName } from '@/services/translator';
 
 interface Props {
   visible: boolean;
   onClose: () => void;
   config: TranslatorConfig;
-  onSaveConfig: (config: TranslatorConfig) => void;
+  onSaveConfig: (config: TranslatorConfig, retranslateNow?: boolean) => void;
 }
 
 export const SettingsModal: React.FC<Props> = ({
@@ -37,14 +38,41 @@ export const SettingsModal: React.FC<Props> = ({
   const [apiKey, setApiKey] = useState(config.apiKey);
   const [apiEndpoint, setApiEndpoint] = useState(config.apiEndpoint);
   const [model, setModel] = useState(config.model);
+  const [isTesting, setIsTesting] = useState(false);
+  const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null);
+
+  const handleTestConnection = async () => {
+    setIsTesting(true);
+    setTestResult(null);
+    try {
+      const res = await testTranslatorConnection({
+        provider,
+        apiKey: apiKey.trim(),
+        apiEndpoint: apiEndpoint.trim(),
+        model: model.trim(),
+      });
+      setTestResult(res);
+    } catch (err: any) {
+      setTestResult({
+        success: false,
+        message: err.message || '测试发生异常',
+      });
+    } finally {
+      setIsTesting(false);
+    }
+  };
 
   const handleSave = () => {
-    onSaveConfig({
-      provider,
-      apiKey,
-      apiEndpoint,
-      model,
-    });
+    const finalModel = normalizeModelName(provider, model);
+    onSaveConfig(
+      {
+        provider,
+        apiKey: apiKey.trim(),
+        apiEndpoint: apiEndpoint.trim(),
+        model: finalModel,
+      },
+      true
+    );
     onClose();
   };
 
@@ -72,8 +100,9 @@ export const SettingsModal: React.FC<Props> = ({
             <Text style={styles.fieldLabel}>翻译后端</Text>
             <View style={styles.providerRow}>
               {[
-                { key: 'mock', label: '内置离线' },
+                { key: 'mock', label: '离线内置' },
                 { key: 'deepseek', label: 'DeepSeek' },
+                { key: 'sakura', label: 'Sakura二次元' },
                 { key: 'openai', label: 'OpenAI' },
                 { key: 'deepl', label: 'DeepL' },
               ].map((item) => {
@@ -81,7 +110,20 @@ export const SettingsModal: React.FC<Props> = ({
                 return (
                   <TouchableOpacity
                     key={item.key}
-                    onPress={() => setProvider(item.key as any)}
+                    onPress={() => {
+                      const nextProvider = item.key as any;
+                      setProvider(nextProvider);
+                      if (nextProvider === 'deepseek') {
+                        setModel('deepseek-flash');
+                        setApiEndpoint('https://api.deepseek.com/chat/completions');
+                      } else if (nextProvider === 'sakura') {
+                        setModel('sakura-1.5b-qwen2.5-v1.0');
+                        setApiEndpoint('http://localhost:8080/v1/chat/completions');
+                      } else if (nextProvider === 'openai') {
+                        setModel('gpt-4o-mini');
+                        setApiEndpoint('https://api.openai.com/v1/chat/completions');
+                      }
+                    }}
                     style={[
                       styles.providerChip,
                       active && styles.providerChipActive,
@@ -102,14 +144,14 @@ export const SettingsModal: React.FC<Props> = ({
 
             {provider !== 'mock' && (
               <>
-                <Text style={styles.fieldLabel}>API Key</Text>
+                <Text style={styles.fieldLabel}>API Key {provider === 'sakura' && '(本地Sakura服务可填任意字符)'}</Text>
                 <TextInput
                   style={styles.input}
-                  placeholder="sk-..."
+                  placeholder={provider === 'sakura' ? 'sk-sakura 或任意字符' : 'sk-...'}
                   placeholderTextColor="#94A3B8"
                   value={apiKey}
                   onChangeText={setApiKey}
-                  secureTextEntry
+                  secureTextEntry={provider !== 'sakura'}
                 />
 
                 <Text style={styles.fieldLabel}>API 端点 (可选)</Text>
@@ -118,6 +160,8 @@ export const SettingsModal: React.FC<Props> = ({
                   placeholder={
                     provider === 'deepseek'
                       ? 'https://api.deepseek.com/chat/completions'
+                      : provider === 'sakura'
+                      ? 'http://localhost:8080/v1/chat/completions'
                       : 'https://api.openai.com/v1/chat/completions'
                   }
                   placeholderTextColor="#94A3B8"
@@ -128,11 +172,163 @@ export const SettingsModal: React.FC<Props> = ({
                 <Text style={styles.fieldLabel}>模型名称 (可选)</Text>
                 <TextInput
                   style={styles.input}
-                  placeholder={provider === 'deepseek' ? 'deepseek-chat' : 'gpt-4o-mini'}
+                  placeholder={
+                    provider === 'deepseek'
+                      ? 'deepseek-flash'
+                      : provider === 'sakura'
+                      ? 'sakura-1.5b-qwen2.5-v1.0'
+                      : 'gpt-4o-mini'
+                  }
                   placeholderTextColor="#94A3B8"
                   value={model}
                   onChangeText={setModel}
                 />
+
+                {/* 快速选择推荐模型 */}
+                <View style={styles.modelPresetRow}>
+                  <Text style={styles.presetLabel}>推荐模型:</Text>
+                  {provider === 'deepseek' && (
+                    <>
+                      <TouchableOpacity
+                        style={[
+                          styles.presetChip,
+                          model === 'deepseek-flash' && styles.presetChipActive,
+                        ]}
+                        onPress={() => setModel('deepseek-flash')}
+                      >
+                        <Text
+                          style={[
+                            styles.presetChipText,
+                            model === 'deepseek-flash' && styles.presetChipTextActive,
+                          ]}
+                        >
+                          deepseek-flash (推荐/视觉)
+                        </Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        style={[
+                          styles.presetChip,
+                          model === 'deepseek-chat' && styles.presetChipActive,
+                        ]}
+                        onPress={() => setModel('deepseek-chat')}
+                      >
+                        <Text
+                          style={[
+                            styles.presetChipText,
+                            model === 'deepseek-chat' && styles.presetChipTextActive,
+                          ]}
+                        >
+                          deepseek-chat (V3)
+                        </Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        style={[
+                          styles.presetChip,
+                          model === 'deepseek-reasoner' && styles.presetChipActive,
+                        ]}
+                        onPress={() => setModel('deepseek-reasoner')}
+                      >
+                        <Text
+                          style={[
+                            styles.presetChipText,
+                            model === 'deepseek-reasoner' && styles.presetChipTextActive,
+                          ]}
+                        >
+                          deepseek-reasoner (R1)
+                        </Text>
+                      </TouchableOpacity>
+                    </>
+                  )}
+                  {provider === 'openai' && (
+                    <>
+                      <TouchableOpacity
+                        style={[
+                          styles.presetChip,
+                          model === 'gpt-4o-mini' && styles.presetChipActive,
+                        ]}
+                        onPress={() => setModel('gpt-4o-mini')}
+                      >
+                        <Text
+                          style={[
+                            styles.presetChipText,
+                            model === 'gpt-4o-mini' && styles.presetChipTextActive,
+                          ]}
+                        >
+                          gpt-4o-mini (推荐)
+                        </Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        style={[
+                          styles.presetChip,
+                          model === 'gpt-4o' && styles.presetChipActive,
+                        ]}
+                        onPress={() => setModel('gpt-4o')}
+                      >
+                        <Text
+                          style={[
+                            styles.presetChipText,
+                            model === 'gpt-4o' && styles.presetChipTextActive,
+                          ]}
+                        >
+                          gpt-4o
+                        </Text>
+                      </TouchableOpacity>
+                    </>
+                  )}
+                </View>
+
+                {/* 智能特性提示 */}
+                {provider === 'deepseek' && (
+                  <View style={styles.deepseekInfoBox}>
+                    <Ionicons name="sparkles" size={15} color="#0284C7" />
+                    <Text style={styles.deepseekInfoText}>
+                      🌟 DeepSeek-Flash 支持超高速文本批量翻译与多模态图像视觉理解（支持封面艺术大字与拟声词识别）。
+                    </Text>
+                  </View>
+                )}
+
+                {/* API 连通性快速测试 */}
+                <TouchableOpacity
+                  style={[styles.testButton, isTesting && styles.testButtonDisabled]}
+                  onPress={handleTestConnection}
+                  disabled={isTesting}
+                >
+                  <Ionicons
+                    name={isTesting ? 'reload' : 'flash-outline'}
+                    size={16}
+                    color="#0284C7"
+                  />
+                  <Text style={styles.testButtonText}>
+                    {isTesting ? '正在发送测试请求...' : '🧪 测试 API 连接状态'}
+                  </Text>
+                </TouchableOpacity>
+
+                {testResult && (
+                  <View
+                    style={[
+                      styles.testResultBox,
+                      testResult.success
+                        ? styles.testResultSuccess
+                        : styles.testResultFail,
+                    ]}
+                  >
+                    <Ionicons
+                      name={testResult.success ? 'checkmark-circle' : 'close-circle'}
+                      size={18}
+                      color={testResult.success ? '#16A34A' : '#DC2626'}
+                    />
+                    <Text
+                      style={[
+                        styles.testResultText,
+                        testResult.success
+                          ? styles.testResultSuccessText
+                          : styles.testResultFailText,
+                      ]}
+                    >
+                      {testResult.message}
+                    </Text>
+                  </View>
+                )}
               </>
             )}
 
@@ -259,6 +455,108 @@ const styles = StyleSheet.create({
   },
   bold: {
     fontWeight: '700',
+  },
+  modelPresetRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 6,
+    marginBottom: 10,
+    marginTop: 2,
+  },
+  presetLabel: {
+    fontSize: 11,
+    color: '#64748B',
+    fontWeight: '600',
+  },
+  presetChip: {
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 6,
+    backgroundColor: '#F1F5F9',
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+  },
+  presetChipActive: {
+    backgroundColor: '#E0F2FE',
+    borderColor: '#0284C7',
+  },
+  presetChipText: {
+    fontSize: 11,
+    color: '#475569',
+    fontWeight: '500',
+  },
+  presetChipTextActive: {
+    color: '#0369A1',
+    fontWeight: '700',
+  },
+  deepseekInfoBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: '#F0F9FF',
+    borderWidth: 1,
+    borderColor: '#BAE6FD',
+    padding: 8,
+    borderRadius: 8,
+    marginBottom: 10,
+  },
+  deepseekInfoText: {
+    fontSize: 11,
+    color: '#0369A1',
+    fontWeight: '500',
+    flex: 1,
+    lineHeight: 16,
+  },
+  testButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: 9,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#BAE6FD',
+    backgroundColor: '#F0F9FF',
+    marginBottom: 8,
+  },
+  testButtonDisabled: {
+    opacity: 0.5,
+  },
+  testButtonText: {
+    fontSize: 13,
+    color: '#0284C7',
+    fontWeight: '700',
+  },
+  testResultBox: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 8,
+    padding: 10,
+    borderRadius: 8,
+    marginBottom: 10,
+    borderWidth: 1,
+  },
+  testResultSuccess: {
+    backgroundColor: '#F0FDF4',
+    borderColor: '#86EFAC',
+  },
+  testResultFail: {
+    backgroundColor: '#FEF2F2',
+    borderColor: '#FECACA',
+  },
+  testResultText: {
+    fontSize: 12,
+    lineHeight: 18,
+    flex: 1,
+  },
+  testResultSuccessText: {
+    color: '#15803D',
+    fontWeight: '600',
+  },
+  testResultFailText: {
+    color: '#B91C1C',
+    fontWeight: '500',
   },
   saveButton: {
     backgroundColor: '#0284C7',

@@ -12,7 +12,7 @@ import { Ionicons } from '@expo/vector-icons';
 import * as ScreenOverlay from 'screen-translator-overlay';
 import { CapturedScreenEvent, OverlayBubbleItem } from 'screen-translator-overlay';
 import { TextBubble, TranslatorConfig } from '@/types/manga';
-import { translateBubbleText } from '@/services/translator';
+import { translateBubbleText, translateMangaBubblesBatch } from '@/services/translator';
 import { sortJapaneseReadingOrder } from '@/services/bubbleEngine';
 
 import { SimulatedFloatingBall } from './SimulatedFloatingBall';
@@ -102,52 +102,76 @@ export function FloatingOverlayController({
     setIsTranslatingCaptured(true);
     onTranslatingChange?.(true);
     try {
-      // 模拟/实际检测截屏中的对白文字块（真实落地对接 Manga-OCR/PaddleOCR 后端）
-      const detectedRawBubbles: TextBubble[] = [
-        {
-          id: `cap_b1_${Date.now()}`,
-          box: {
-            x: Math.round(event.width * 0.55),
-            y: Math.round(event.height * 0.18),
-            width: Math.round(event.width * 0.32),
-            height: Math.round(event.height * 0.14),
-          },
-          direction: 'vertical',
-          readingOrderIndex: 1,
-          sourceText: 'お前…本气で言っているのか？',
-          targetText: '',
-          detectedBgColor: '#FFFFFF',
-          detectedTextColor: '#0F172A',
-        },
-        {
-          id: `cap_b2_${Date.now()}`,
-          box: {
-            x: Math.round(event.width * 0.12),
-            y: Math.round(event.height * 0.45),
-            width: Math.round(event.width * 0.38),
-            height: Math.round(event.height * 0.12),
-          },
-          direction: 'vertical',
-          readingOrderIndex: 2,
-          sourceText: 'ああ、绝対に谛めたりしないさ！',
-          targetText: '',
-          detectedBgColor: '#FFFFFF',
-          detectedTextColor: '#0F172A',
-        },
-      ];
+      let detectedRawBubbles: TextBubble[] = [];
 
-      // 1. 日漫从右往左阅读流重排
+      if (event.detectedBubbles && event.detectedBubbles.length > 0) {
+        // 使用 Android 端侧 Google ML Kit 离线识别与气泡聚类所得的真实对白块与坐标
+        detectedRawBubbles = event.detectedBubbles.map((item, idx) => ({
+          id: item.id || `cap_b_${idx + 1}`,
+          box: {
+            x: item.box.x,
+            y: item.box.y,
+            width: item.box.width,
+            height: item.box.height,
+          },
+          direction: item.direction || 'vertical',
+          textType: item.textType || 'bubble',
+          readingOrderIndex: idx + 1,
+          sourceText: item.sourceText,
+          targetText: '',
+          detectedBgColor: item.detectedBgColor || '#FFFFFF',
+          detectedTextColor: item.detectedTextColor || '#0F172A',
+          fontSize: item.fontSize,
+        }));
+      } else if (!ScreenOverlay.isSupported()) {
+        // 模拟/预览环境兜底数据
+        detectedRawBubbles = [
+          {
+            id: `cap_b1_${Date.now()}`,
+            box: {
+              x: Math.round(event.width * 0.55),
+              y: Math.round(event.height * 0.18),
+              width: Math.round(event.width * 0.32),
+              height: Math.round(event.height * 0.14),
+            },
+            direction: 'vertical',
+            readingOrderIndex: 1,
+            sourceText: 'お前…本気で言っているのか？',
+            targetText: '',
+            detectedBgColor: '#FFFFFF',
+            detectedTextColor: '#0F172A',
+          },
+          {
+            id: `cap_b2_${Date.now()}`,
+            box: {
+              x: Math.round(event.width * 0.12),
+              y: Math.round(event.height * 0.45),
+              width: Math.round(event.width * 0.38),
+              height: Math.round(event.height * 0.12),
+            },
+            direction: 'vertical',
+            readingOrderIndex: 2,
+            sourceText: 'ああ、絶対に諦めたりしないさ！',
+            targetText: '',
+            detectedBgColor: '#FFFFFF',
+            detectedTextColor: '#0F172A',
+          },
+        ];
+      }
+
+      if (detectedRawBubbles.length === 0) {
+        ScreenOverlay.updateTranslationResult([]);
+        setTranslatedCount(0);
+        return;
+      }
+
+      // 1. 日漫从右往左、从上往下阅读流重排 (RTL)
       const sorted = sortJapaneseReadingOrder(detectedRawBubbles);
 
-      // 2. 调用翻译模型 (DeepSeek / DeepL / Mock)
-      const translatedBubbles: TextBubble[] = await Promise.all(
-        sorted.map(async (b) => {
-          const translated = await translateBubbleText(b.sourceText, translatorConfig);
-          return {
-            ...b,
-            targetText: translated,
-          };
-        })
+      // 2. 调用全屏多对白上下文大模型批量翻译 (整屏单次 API 请求，保留角色对白语境)
+      const translatedBubbles: TextBubble[] = await translateMangaBubblesBatch(
+        sorted,
+        translatorConfig
       );
 
       setTranslatedCount(translatedBubbles.length);
