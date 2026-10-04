@@ -19,6 +19,8 @@ import { ControlToolbar } from '@/components/ControlToolbar';
 import { BubbleDetailModal } from '@/components/BubbleDetailModal';
 import { SettingsModal } from '@/components/SettingsModal';
 import { FloatingOverlayController } from '@/components/FloatingOverlayController';
+import { SimulatedFloatingBall } from '@/components/SimulatedFloatingBall';
+import { captureScreen, OverlayBubbleItem } from 'screen-translator-overlay';
 
 export default function MangaTranslatorScreen() {
   const insets = useSafeAreaInsets();
@@ -34,6 +36,11 @@ export default function MangaTranslatorScreen() {
   const [isDetailVisible, setIsDetailVisible] = useState(false);
   const [isSettingsVisible, setIsSettingsVisible] = useState(false);
   const [activeTab, setActiveTab] = useState<'canvas' | 'overlay'>('overlay');
+
+  // 全屏仿真悬浮球状态
+  const [showSimulatedBall, setShowSimulatedBall] = useState(false);
+  const [simulatedBubbles, setSimulatedBubbles] = useState<OverlayBubbleItem[]>([]);
+  const [isTranslatingCaptured, setIsTranslatingCaptured] = useState(false);
 
   const [translatorConfig, setTranslatorConfig] = useState<TranslatorConfig>({
     provider: 'mock',
@@ -207,6 +214,11 @@ export default function MangaTranslatorScreen() {
           <FloatingOverlayController
             translatorConfig={translatorConfig}
             onNewCapturedPage={handleNewCapturedPage}
+            showSimulatedBall={showSimulatedBall}
+            onToggleSimulatedBall={setShowSimulatedBall}
+            simulatedBubbles={simulatedBubbles}
+            onSimulatedBubblesChange={setSimulatedBubbles}
+            onTranslatingChange={setIsTranslatingCaptured}
           />
 
           {/* 使用指引卡片 */}
@@ -284,6 +296,17 @@ export default function MangaTranslatorScreen() {
         config={translatorConfig}
         onSaveConfig={setTranslatorConfig}
       />
+
+      {/* 应用内全屏仿真悬浮球（手指1:1精准跟手、绝不跳变、自动平滑吸附边缘） */}
+      {showSimulatedBall && (
+        <SimulatedFloatingBall
+          onCapture={() => {
+            captureScreen();
+          }}
+          bubbles={simulatedBubbles}
+          isProcessing={isTranslatingCaptured}
+        />
+      )}
     </View>
   );
 }

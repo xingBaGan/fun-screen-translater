@@ -51,8 +51,12 @@ class FloatingOverlayView(
   private val inpaintParams: WindowManager.LayoutParams
   private var isInpaintOverlayVisible = false
 
-  private val screenWidth: Int
-  private val screenHeight: Int
+  private var screenWidth: Int
+  private var screenHeight: Int
+  private var edgeAnimator: ValueAnimator? = null
+
+  private fun getRealScreenWidth(): Int = context.resources.displayMetrics.widthPixels
+  private fun getRealScreenHeight(): Int = context.resources.displayMetrics.heightPixels
 
   init {
     val displayMetrics = context.resources.displayMetrics
@@ -67,12 +71,15 @@ class FloatingOverlayView(
       ballSize,
       windowType,
       WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-        WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+        WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
       PixelFormat.TRANSLUCENT
     ).apply {
       gravity = Gravity.TOP or Gravity.START
       x = screenWidth - ballSize - dpToPx(16f)
       y = screenHeight / 3
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+        layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+      }
     }
 
     setupBallView(ballSize)
@@ -133,10 +140,12 @@ class FloatingOverlayView(
     var initialTouchX = 0f
     var initialTouchY = 0f
     var isDragging = false
+    val touchSlop = dpToPx(6f)
 
     ballView.setOnTouchListener { _, event ->
-      when (event.action) {
+      when (event.actionMasked) {
         MotionEvent.ACTION_DOWN -> {
+          edgeAnimator?.cancel()
           initialX = ballParams.x
           initialY = ballParams.y
           initialTouchX = event.rawX
@@ -147,20 +156,24 @@ class FloatingOverlayView(
         MotionEvent.ACTION_MOVE -> {
           val dx = event.rawX - initialTouchX
           val dy = event.rawY - initialTouchY
-          if (Math.abs(dx) > 10 || Math.abs(dy) > 10) {
+          if (isDragging || Math.hypot(dx.toDouble(), dy.toDouble()) > touchSlop) {
             isDragging = true
-            ballParams.x = (initialX + dx).toInt()
-            ballParams.y = (initialY + dy).toInt()
-            windowManager.updateViewLayout(ballView, ballParams)
+            val curWidth = getRealScreenWidth()
+            val curHeight = getRealScreenHeight()
+            ballParams.x = (initialX + dx).toInt().coerceIn(0, curWidth - ballSize)
+            ballParams.y = (initialY + dy).toInt().coerceIn(0, curHeight - ballSize)
+            try {
+              windowManager.updateViewLayout(ballView, ballParams)
+            } catch (_: Exception) {}
           }
           true
         }
-        MotionEvent.ACTION_UP -> {
+        MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
           if (!isDragging) {
             // 点击事件：触发截屏翻译
             onCaptureClicked()
           } else {
-            // 拖拽松开：自动吸附到屏幕最近边缘（左或右）
+            // 拖拽松开：自动平滑吸附到屏幕最近边缘（左或右）
             snapToEdge(ballParams.x, ballSize)
           }
           true
@@ -171,21 +184,24 @@ class FloatingOverlayView(
   }
 
   private fun snapToEdge(currentX: Int, ballSize: Int) {
-    val targetX = if (currentX + ballSize / 2 < screenWidth / 2) {
+    edgeAnimator?.cancel()
+    val curWidth = getRealScreenWidth()
+    val targetX = if (currentX + ballSize / 2 < curWidth / 2) {
       dpToPx(8f)
     } else {
-      screenWidth - ballSize - dpToPx(8f)
+      curWidth - ballSize - dpToPx(8f)
     }
 
-    val animator = ValueAnimator.ofInt(currentX, targetX)
-    animator.duration = 200
-    animator.addUpdateListener { animation ->
-      ballParams.x = animation.animatedValue as Int
-      try {
-        windowManager.updateViewLayout(ballView, ballParams)
-      } catch (_: Exception) {}
+    edgeAnimator = ValueAnimator.ofInt(currentX, targetX).apply {
+      duration = 200
+      addUpdateListener { animation ->
+        ballParams.x = animation.animatedValue as Int
+        try {
+          windowManager.updateViewLayout(ballView, ballParams)
+        } catch (_: Exception) {}
+      }
+      start()
     }
-    animator.start()
   }
 
   private fun setupCardView(maxHeight: Int) {
