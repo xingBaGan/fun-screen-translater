@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   View,
   Text,
@@ -14,6 +14,7 @@ import { CapturedScreenEvent, OverlayBubbleItem } from 'screen-translator-overla
 import { TextBubble, TranslatorConfig } from '@/types/manga';
 import { translateBubbleText, translateMangaBubblesBatch } from '@/services/translator';
 import { sortJapaneseReadingOrder } from '@/services/bubbleEngine';
+import { loadTranslatorConfig } from '@/services/storage';
 
 import { SimulatedFloatingBall } from './SimulatedFloatingBall';
 
@@ -41,6 +42,11 @@ export function FloatingOverlayController({
   onSimulatedBubblesChange,
   onTranslatingChange,
 }: FloatingOverlayControllerProps) {
+  const configRef = useRef(translatorConfig);
+  useEffect(() => {
+    configRef.current = translatorConfig;
+  }, [translatorConfig]);
+
   const [hasOverlayPermission, setHasOverlayPermission] = useState<boolean>(true);
   const [isServiceRunning, setIsServiceRunning] = useState<boolean>(false);
   const [isStartingService, setIsStartingService] = useState<boolean>(false);
@@ -65,24 +71,55 @@ export function FloatingOverlayController({
     }
   };
 
+  // 互斥切换应用内仿真悬浮球（若系统级悬浮球正在运行，提醒用户或互斥关闭）
+  const handleToggleSimulatedBallWithMutex = () => {
+    if (isServiceRunning) {
+      Alert.alert(
+        '悬浮球互斥提示',
+        '系统级跨应用悬浮球正在运行中（可在其他 App 上方使用）。若要切换为应用内仿真球，需要先停止系统悬浮服务，是否停止？',
+        [
+          { text: '取消', style: 'cancel' },
+          {
+            text: '停止系统悬浮并启用仿真球',
+            style: 'destructive',
+            onPress: () => {
+              handleStopService();
+              handleToggleSimulatedBall(true);
+            },
+          },
+        ]
+      );
+      return;
+    }
+    handleToggleSimulatedBall(!showSimulatedBall);
+  };
+
   // 检查权限与状态
   const checkPermissionsAndStatus = () => {
+    const running = ScreenOverlay.isServiceRunning();
+    setIsServiceRunning(running);
+    if (running) {
+      // 若原生服务已在运行，确保关闭应用内仿真球，防止双球重叠
+      handleToggleSimulatedBall(false);
+    }
+
     if (Platform.OS === 'android') {
       const granted = ScreenOverlay.isOverlayPermissionGranted();
       setHasOverlayPermission(granted);
-      setIsServiceRunning(ScreenOverlay.isServiceRunning());
     } else {
       setHasOverlayPermission(true);
-      setIsServiceRunning(ScreenOverlay.isServiceRunning());
     }
   };
 
   useEffect(() => {
     checkPermissionsAndStatus();
 
-    // 监听服务状态变更
+    // 监听服务状态变更：系统悬浮服务开启时，自动互斥关闭应用内仿真球
     const stateSub = ScreenOverlay.addServiceStateListener((event) => {
       setIsServiceRunning(event.running);
+      if (event.running) {
+        handleToggleSimulatedBall(false);
+      }
     });
 
     // 监听全局屏幕截屏事件（无论在第三方应用还是当前应用点击悬浮球触发）
@@ -120,7 +157,7 @@ export function FloatingOverlayController({
           sourceText: item.sourceText,
           targetText: '',
           detectedBgColor: item.detectedBgColor || '#FFFFFF',
-          detectedTextColor: item.detectedTextColor || '#0F172A',
+          detectedTextColor: item.detectedTextColor || '#18181B',
           fontSize: item.fontSize,
         }));
       } else if (!ScreenOverlay.isSupported()) {
@@ -139,7 +176,7 @@ export function FloatingOverlayController({
             sourceText: 'お前…本気で言っているのか？',
             targetText: '',
             detectedBgColor: '#FFFFFF',
-            detectedTextColor: '#0F172A',
+            detectedTextColor: '#18181B',
           },
           {
             id: `cap_b2_${Date.now()}`,
@@ -154,7 +191,7 @@ export function FloatingOverlayController({
             sourceText: 'ああ、絶対に諦めたりしないさ！',
             targetText: '',
             detectedBgColor: '#FFFFFF',
-            detectedTextColor: '#0F172A',
+            detectedTextColor: '#18181B',
           },
         ];
       }
@@ -169,9 +206,21 @@ export function FloatingOverlayController({
       const sorted = sortJapaneseReadingOrder(detectedRawBubbles);
 
       // 2. 调用全屏多对白上下文大模型批量翻译 (整屏单次 API 请求，保留角色对白语境)
+      let effectiveConfig = configRef.current || translatorConfig;
+      if (effectiveConfig.provider === 'mock' || !effectiveConfig.apiKey) {
+        try {
+          const persisted = await loadTranslatorConfig();
+          if (persisted && persisted.provider !== 'mock' && persisted.apiKey) {
+            effectiveConfig = persisted;
+          }
+        } catch {
+          // ignore
+        }
+      }
+
       const translatedBubbles: TextBubble[] = await translateMangaBubblesBatch(
         sorted,
-        translatorConfig
+        effectiveConfig
       );
 
       setTranslatedCount(translatedBubbles.length);
@@ -227,6 +276,8 @@ export function FloatingOverlayController({
 
   // 启动悬浮翻译服务
   const handleStartService = async () => {
+    // 启动原生前先自动互斥关闭应用内仿真球
+    handleToggleSimulatedBall(false);
     setIsStartingService(true);
     try {
       if (Platform.OS === 'android') {
@@ -240,9 +291,10 @@ export function FloatingOverlayController({
       const success = await ScreenOverlay.startOverlayService();
       if (success) {
         setIsServiceRunning(true);
+        handleToggleSimulatedBall(false);
         Alert.alert(
           '🎉 跨应用悬浮翻译已启动！',
-          '悬浮球已出现在屏幕边缘。你现在可以切换到 Tachiyomi、B站漫画、浏览器等任意第三方应用，点击悬浮球即可一键截屏并实时翻译！'
+          '悬浮球已出现在屏幕边缘（应用内仿真球已自动互斥隐藏）。你现在可以切换到 Tachiyomi、B站漫画、浏览器等任意第三方应用，点击悬浮球即可一键截屏并实时翻译！'
         );
       }
     } catch (err: any) {
@@ -359,15 +411,32 @@ export function FloatingOverlayController({
         </TouchableOpacity>
       </View>
 
-      {/* 仿真模式开关（便于非原生环境验证） */}
+      {/* 仿真模式开关（便于非原生环境验证，与系统级悬浮球严格互斥） */}
       <View style={styles.simRow}>
-        <Text style={styles.simLabel}>应用内交互仿真球 (免切换应用快速体验):</Text>
+        <View style={styles.simLabelCol}>
+          <Text style={styles.simLabel}>应用内交互仿真球 (免切换应用快速体验):</Text>
+          {isServiceRunning && (
+            <Text style={styles.simDisabledTip}>
+              ⚠️ 系统级悬浮球运行中，仿真球已自动避让关闭
+            </Text>
+          )}
+        </View>
         <TouchableOpacity
-          style={[styles.toggleBtn, showSimulatedBall && styles.toggleBtnActive]}
-          onPress={() => handleToggleSimulatedBall(!showSimulatedBall)}
+          style={[
+            styles.toggleBtn,
+            showSimulatedBall && !isServiceRunning && styles.toggleBtnActive,
+            isServiceRunning && styles.toggleBtnDisabled,
+          ]}
+          onPress={handleToggleSimulatedBallWithMutex}
         >
-          <Text style={[styles.toggleBtnText, showSimulatedBall && styles.toggleBtnTextActive]}>
-            {showSimulatedBall ? '已开启' : '已关闭'}
+          <Text
+            style={[
+              styles.toggleBtnText,
+              showSimulatedBall && !isServiceRunning && styles.toggleBtnTextActive,
+              isServiceRunning && styles.toggleBtnTextDisabled,
+            ]}
+          >
+            {isServiceRunning ? '已互斥避让' : (showSimulatedBall ? '已开启' : '已关闭')}
           </Text>
         </TouchableOpacity>
       </View>
@@ -394,12 +463,13 @@ export function FloatingOverlayController({
         </View>
       )}
 
-      {/* 若未由外部容器接管渲染，则在此处降级挂载全局仿真悬浮球 */}
-      {showSimulatedBallProp === undefined && showSimulatedBall && (
+      {/* 若未由外部容器接管渲染，则在此处降级挂载全局仿真悬浮球（与原生系统悬浮严格互斥） */}
+      {showSimulatedBallProp === undefined && showSimulatedBall && !isServiceRunning && (
         <SimulatedFloatingBall
           onCapture={handleTriggerCapture}
           bubbles={simulatedBubbles}
           isProcessing={isTranslatingCaptured}
+          onClose={() => handleToggleSimulatedBall(false)}
         />
       )}
     </View>
@@ -570,23 +640,38 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    paddingVertical: 4,
+    paddingVertical: 6,
     borderTopWidth: 1,
     borderTopColor: '#F1F5F9',
-    marginTop: 4,
+    marginTop: 6,
+  },
+  simLabelCol: {
+    flex: 1,
+    paddingRight: 8,
   },
   simLabel: {
     fontSize: 12,
     color: '#64748B',
   },
+  simDisabledTip: {
+    fontSize: 11,
+    color: '#D97706',
+    marginTop: 2,
+    fontWeight: '500',
+  },
   toggleBtn: {
     paddingHorizontal: 10,
-    paddingVertical: 4,
+    paddingVertical: 5,
     borderRadius: 6,
     backgroundColor: '#E2E8F0',
   },
   toggleBtnActive: {
     backgroundColor: '#4F46E5',
+  },
+  toggleBtnDisabled: {
+    backgroundColor: '#F1F5F9',
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
   },
   toggleBtnText: {
     fontSize: 11,
@@ -595,6 +680,9 @@ const styles = StyleSheet.create({
   },
   toggleBtnTextActive: {
     color: '#FFFFFF',
+  },
+  toggleBtnTextDisabled: {
+    color: '#94A3B8',
   },
   eventInfoBox: {
     marginTop: 10,

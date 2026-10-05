@@ -164,7 +164,7 @@ class FloatingOverlayView(
             ballParams.y = (initialY + dy).toInt().coerceIn(0, curHeight - ballSize)
             try {
               windowManager.updateViewLayout(ballView, ballParams)
-            } catch (_: Exception) {}
+            } catch (e: Exception) {}
           }
           true
         }
@@ -198,7 +198,7 @@ class FloatingOverlayView(
         ballParams.x = animation.animatedValue as Int
         try {
           windowManager.updateViewLayout(ballView, ballParams)
-        } catch (_: Exception) {}
+        } catch (e: Exception) {}
       }
       start()
     }
@@ -226,7 +226,7 @@ class FloatingOverlayView(
       if (ballView.windowToken == null) {
         windowManager.addView(ballView, ballParams)
       }
-    } catch (_: Exception) {}
+    } catch (e: Exception) {}
   }
 
   fun hide() {
@@ -236,7 +236,7 @@ class FloatingOverlayView(
       }
       dismissCard()
       dismissInpaintOverlay()
-    } catch (_: Exception) {}
+    } catch (e: Exception) {}
   }
 
   fun setBallVisibility(visible: Boolean) {
@@ -361,7 +361,7 @@ class FloatingOverlayView(
         } else {
           windowManager.updateViewLayout(cardView, cardParams)
         }
-      } catch (_: Exception) {}
+      } catch (e: Exception) {}
     }
   }
 
@@ -437,20 +437,47 @@ class FloatingOverlayView(
           val bgColor = item.optString("detectedBgColor", "#FFFFFF")
           val textColor = item.optString("detectedTextColor", "#0F172A")
 
-          // 原位气泡白底抹平层 + 译文字体层
+          // 原位气泡底色消字层 + 译文字体层 (半透明融合，自适应字号)
           val bubbleOverlay = TextView(context).apply {
             text = targetText
-            setTextColor(Color.parseColor(textColor))
-            textSize = 12f
+            setTextColor(try { Color.parseColor(textColor) } catch (e: Exception) { Color.parseColor("#18181B") })
             gravity = Gravity.CENTER
+            includeFontPadding = false
+
+            // 自适应字号估算，防止文字溢出或截断
+            val charCount = kotlin.math.max(1, targetText.length)
+            val padH = dpToPx(3f)
+            val padV = dpToPx(2f)
+            val availW = kotlin.math.max(8, width - padH * 2)
+            val availH = kotlin.math.max(8, height - padV * 2)
+            var bestSizeSp = 9f
+            for (s in 16 downTo 6) {
+              val charsPerLine = kotlin.math.max(1, (availW / (s * 1.35f)).toInt())
+              val lines = (charCount + charsPerLine - 1) / charsPerLine
+              val totalH = lines * (s * 1.55f)
+              if (totalH <= availH) {
+                bestSizeSp = s.toFloat()
+                break
+              }
+            }
+            textSize = bestSizeSp
+
+            // 具有微润透明度的底色，自然融入漫画原画 (无生硬灰色边框与阴影)
+            val baseBgColor = try { Color.parseColor(bgColor) } catch (e: Exception) { Color.WHITE }
+            val transparentBgColor = Color.argb(
+              224, // ~88% opacity
+              Color.red(baseBgColor),
+              Color.green(baseBgColor),
+              Color.blue(baseBgColor)
+            )
+
             val bg = GradientDrawable().apply {
               shape = GradientDrawable.RECTANGLE
-              cornerRadius = dpToPx(6f).toFloat()
-              setColor(Color.parseColor(bgColor))
-              setStroke(dpToPx(1f), Color.parseColor("#94A3B8"))
+              cornerRadius = dpToPx(kotlin.math.min(8f, kotlin.math.min(width, height) * 0.22f)).toFloat()
+              setColor(transparentBgColor)
             }
             background = bg
-            setPadding(dpToPx(4f), dpToPx(4f), dpToPx(4f), dpToPx(4f))
+            setPadding(padH, padV, padH, padV)
             layoutParams = FrameLayout.LayoutParams(width, height).apply {
               leftMargin = x
               topMargin = y
@@ -469,7 +496,7 @@ class FloatingOverlayView(
           }
           isInpaintOverlayVisible = true
         }
-      } catch (_: Exception) {}
+      } catch (e: Exception) {}
     }
   }
 
@@ -479,7 +506,7 @@ class FloatingOverlayView(
         windowManager.removeView(cardView)
         isCardVisible = false
       }
-    } catch (_: Exception) {}
+    } catch (e: Exception) {}
   }
 
   fun dismissInpaintOverlay() {
@@ -488,7 +515,7 @@ class FloatingOverlayView(
         windowManager.removeView(inpaintOverlayView)
         isInpaintOverlayVisible = false
       }
-    } catch (_: Exception) {}
+    } catch (e: Exception) {}
   }
 
   private fun dpToPx(dp: Float): Int {

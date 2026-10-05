@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Modal,
   View,
@@ -14,6 +14,12 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { TranslatorConfig } from '@/types/manga';
 import { testTranslatorConnection, normalizeModelName } from '@/services/translator';
+import {
+  loadAllProviderSettings,
+  saveAllProviderSettings,
+  DEFAULT_PROVIDER_SETTINGS,
+  ProviderSetting,
+} from '@/services/storage';
 
 interface Props {
   visible: boolean;
@@ -34,12 +40,102 @@ export const SettingsModal: React.FC<Props> = ({
     Platform.OS === 'android' ? 32 : 24
   );
 
-  const [provider, setProvider] = useState(config.provider);
+  const [provider, setProvider] = useState<TranslatorConfig['provider']>(config.provider);
   const [apiKey, setApiKey] = useState(config.apiKey);
   const [apiEndpoint, setApiEndpoint] = useState(config.apiEndpoint);
   const [model, setModel] = useState(config.model);
+  const [providerSettings, setProviderSettings] = useState<Record<string, ProviderSetting>>(DEFAULT_PROVIDER_SETTINGS);
   const [isTesting, setIsTesting] = useState(false);
   const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null);
+
+  // 当弹窗打开或外部配置变化时，从本地持久化存储加载所有提供商的配置
+  useEffect(() => {
+    if (visible) {
+      let isMounted = true;
+      (async () => {
+        try {
+          const all = await loadAllProviderSettings();
+          if (!isMounted) return;
+          setProviderSettings(all);
+
+          const curProvider = config.provider || 'mock';
+          const cachedForProvider = all[curProvider] || DEFAULT_PROVIDER_SETTINGS[curProvider];
+
+          setProvider(curProvider);
+          setApiKey(config.apiKey || cachedForProvider?.apiKey || '');
+          setApiEndpoint(config.apiEndpoint || cachedForProvider?.apiEndpoint || '');
+          setModel(config.model || cachedForProvider?.model || '');
+          setTestResult(null);
+        } catch (err) {
+          console.warn('[SettingsModal] 读取提供商持久化缓存失败:', err);
+        }
+      })();
+      return () => {
+        isMounted = false;
+      };
+    }
+  }, [visible, config]);
+
+  const handleSelectProvider = (nextProvider: TranslatorConfig['provider']) => {
+    // 1. 将当前输入暂存到 providerSettings 中，防止切换丢失
+    const updatedSettings: Record<string, ProviderSetting> = {
+      ...providerSettings,
+      [provider]: {
+        apiKey,
+        apiEndpoint,
+        model,
+      },
+    };
+    setProviderSettings(updatedSettings);
+
+    // 2. 切到下一个 provider
+    setProvider(nextProvider);
+    setTestResult(null);
+
+    // 3. 读取目标 provider 的缓存或默认推荐值
+    const target = updatedSettings[nextProvider] || DEFAULT_PROVIDER_SETTINGS[nextProvider] || {
+      apiKey: '',
+      apiEndpoint: '',
+      model: '',
+    };
+
+    setApiKey(target.apiKey || '');
+    setApiEndpoint(target.apiEndpoint || '');
+    setModel(target.model || '');
+  };
+
+  const handleApiKeyChange = (text: string) => {
+    setApiKey(text);
+    setProviderSettings((prev) => ({
+      ...prev,
+      [provider]: {
+        ...(prev[provider] || DEFAULT_PROVIDER_SETTINGS[provider]),
+        apiKey: text,
+      },
+    }));
+  };
+
+  const handleApiEndpointChange = (text: string) => {
+    setApiEndpoint(text);
+    setProviderSettings((prev) => ({
+      ...prev,
+      [provider]: {
+        ...(prev[provider] || DEFAULT_PROVIDER_SETTINGS[provider]),
+        apiEndpoint: text,
+      },
+    }));
+  };
+
+  const handleModelChange = (text: string) => {
+    setModel(text);
+    setProviderSettings((prev) => ({
+      ...prev,
+      [provider]: {
+        ...(prev[provider] || DEFAULT_PROVIDER_SETTINGS[provider]),
+        model: text,
+      },
+    }));
+  };
 
   const handleTestConnection = async () => {
     setIsTesting(true);
@@ -62,17 +158,34 @@ export const SettingsModal: React.FC<Props> = ({
     }
   };
 
-  const handleSave = () => {
+  const handleSave = async () => {
     const finalModel = normalizeModelName(provider, model);
-    onSaveConfig(
-      {
-        provider,
-        apiKey: apiKey.trim(),
-        apiEndpoint: apiEndpoint.trim(),
+    const trimmedApiKey = apiKey.trim();
+    const trimmedEndpoint = apiEndpoint.trim();
+
+    const finalConfig: TranslatorConfig = {
+      provider,
+      apiKey: trimmedApiKey,
+      apiEndpoint: trimmedEndpoint,
+      model: finalModel,
+    };
+
+    const finalSettings = {
+      ...providerSettings,
+      [provider]: {
+        apiKey: trimmedApiKey,
+        apiEndpoint: trimmedEndpoint,
         model: finalModel,
       },
-      true
-    );
+    };
+
+    try {
+      await saveAllProviderSettings(finalSettings);
+    } catch (err) {
+      console.warn('[SettingsModal] 持久化所有提供商配置失败:', err);
+    }
+
+    onSaveConfig(finalConfig, true);
     onClose();
   };
 
@@ -89,7 +202,10 @@ export const SettingsModal: React.FC<Props> = ({
           onPress={(e) => e.stopPropagation()}
         >
           <View style={styles.header}>
-            <Text style={styles.title}>翻译引擎与 POC 设置</Text>
+            <View>
+              <Text style={styles.title}>翻译引擎与 POC 设置</Text>
+              <Text style={styles.subtitle}>💾 本地持久化存储 · 重启与重新编译均自动保留</Text>
+            </View>
             <TouchableOpacity onPress={onClose} hitSlop={12}>
               <Ionicons name="close" size={24} color="#64748B" />
             </TouchableOpacity>
@@ -110,20 +226,7 @@ export const SettingsModal: React.FC<Props> = ({
                 return (
                   <TouchableOpacity
                     key={item.key}
-                    onPress={() => {
-                      const nextProvider = item.key as any;
-                      setProvider(nextProvider);
-                      if (nextProvider === 'deepseek') {
-                        setModel('deepseek-flash');
-                        setApiEndpoint('https://api.deepseek.com/chat/completions');
-                      } else if (nextProvider === 'sakura') {
-                        setModel('sakura-1.5b-qwen2.5-v1.0');
-                        setApiEndpoint('http://localhost:8080/v1/chat/completions');
-                      } else if (nextProvider === 'openai') {
-                        setModel('gpt-4o-mini');
-                        setApiEndpoint('https://api.openai.com/v1/chat/completions');
-                      }
-                    }}
+                    onPress={() => handleSelectProvider(item.key as any)}
                     style={[
                       styles.providerChip,
                       active && styles.providerChipActive,
@@ -150,8 +253,10 @@ export const SettingsModal: React.FC<Props> = ({
                   placeholder={provider === 'sakura' ? 'sk-sakura 或任意字符' : 'sk-...'}
                   placeholderTextColor="#94A3B8"
                   value={apiKey}
-                  onChangeText={setApiKey}
+                  onChangeText={handleApiKeyChange}
                   secureTextEntry={provider !== 'sakura'}
+                  autoCapitalize="none"
+                  autoCorrect={false}
                 />
 
                 <Text style={styles.fieldLabel}>API 端点 (可选)</Text>
@@ -166,7 +271,9 @@ export const SettingsModal: React.FC<Props> = ({
                   }
                   placeholderTextColor="#94A3B8"
                   value={apiEndpoint}
-                  onChangeText={setApiEndpoint}
+                  onChangeText={handleApiEndpointChange}
+                  autoCapitalize="none"
+                  autoCorrect={false}
                 />
 
                 <Text style={styles.fieldLabel}>模型名称 (可选)</Text>
@@ -181,7 +288,9 @@ export const SettingsModal: React.FC<Props> = ({
                   }
                   placeholderTextColor="#94A3B8"
                   value={model}
-                  onChangeText={setModel}
+                  onChangeText={handleModelChange}
+                  autoCapitalize="none"
+                  autoCorrect={false}
                 />
 
                 {/* 快速选择推荐模型 */}
@@ -194,7 +303,7 @@ export const SettingsModal: React.FC<Props> = ({
                           styles.presetChip,
                           model === 'deepseek-flash' && styles.presetChipActive,
                         ]}
-                        onPress={() => setModel('deepseek-flash')}
+                        onPress={() => handleModelChange('deepseek-flash')}
                       >
                         <Text
                           style={[
@@ -210,7 +319,7 @@ export const SettingsModal: React.FC<Props> = ({
                           styles.presetChip,
                           model === 'deepseek-chat' && styles.presetChipActive,
                         ]}
-                        onPress={() => setModel('deepseek-chat')}
+                        onPress={() => handleModelChange('deepseek-chat')}
                       >
                         <Text
                           style={[
@@ -226,7 +335,7 @@ export const SettingsModal: React.FC<Props> = ({
                           styles.presetChip,
                           model === 'deepseek-reasoner' && styles.presetChipActive,
                         ]}
-                        onPress={() => setModel('deepseek-reasoner')}
+                        onPress={() => handleModelChange('deepseek-reasoner')}
                       >
                         <Text
                           style={[
@@ -246,7 +355,7 @@ export const SettingsModal: React.FC<Props> = ({
                           styles.presetChip,
                           model === 'gpt-4o-mini' && styles.presetChipActive,
                         ]}
-                        onPress={() => setModel('gpt-4o-mini')}
+                        onPress={() => handleModelChange('gpt-4o-mini')}
                       >
                         <Text
                           style={[
@@ -262,7 +371,7 @@ export const SettingsModal: React.FC<Props> = ({
                           styles.presetChip,
                           model === 'gpt-4o' && styles.presetChipActive,
                         ]}
-                        onPress={() => setModel('gpt-4o')}
+                        onPress={() => handleModelChange('gpt-4o')}
                       >
                         <Text
                           style={[
@@ -286,6 +395,14 @@ export const SettingsModal: React.FC<Props> = ({
                     </Text>
                   </View>
                 )}
+
+                {/* 本地持久化提示条 */}
+                <View style={styles.persistNoticeBox}>
+                  <Ionicons name="shield-checkmark-outline" size={14} color="#059669" />
+                  <Text style={styles.persistNoticeText}>
+                    已启用本地持久化存储：API Key 将保存在本地，编译或重启无需重复配置。
+                  </Text>
+                </View>
 
                 {/* API 连通性快速测试 */}
                 <TouchableOpacity
@@ -348,7 +465,8 @@ export const SettingsModal: React.FC<Props> = ({
           </ScrollView>
 
           <TouchableOpacity style={styles.saveButton} onPress={handleSave}>
-            <Text style={styles.saveButtonText}>保存配置</Text>
+            <Ionicons name="save-outline" size={18} color="#FFFFFF" />
+            <Text style={styles.saveButtonText}>保存并持久化配置</Text>
           </TouchableOpacity>
         </Pressable>
       </Pressable>
@@ -381,6 +499,12 @@ const styles = StyleSheet.create({
     fontSize: 17,
     fontWeight: '700',
     color: '#0F172A',
+  },
+  subtitle: {
+    fontSize: 11,
+    color: '#0284C7',
+    marginTop: 2,
+    fontWeight: '600',
   },
   body: {
     marginBottom: 16,
@@ -508,6 +632,24 @@ const styles = StyleSheet.create({
     flex: 1,
     lineHeight: 16,
   },
+  persistNoticeBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: '#ECFDF5',
+    borderWidth: 1,
+    borderColor: '#A7F3D0',
+    padding: 8,
+    borderRadius: 8,
+    marginBottom: 10,
+  },
+  persistNoticeText: {
+    fontSize: 11,
+    color: '#047857',
+    fontWeight: '500',
+    flex: 1,
+    lineHeight: 16,
+  },
   testButton: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -563,6 +705,9 @@ const styles = StyleSheet.create({
     paddingVertical: 13,
     borderRadius: 12,
     alignItems: 'center',
+    flexDirection: 'row',
+    justifyContent: 'center',
+    gap: 6,
   },
   saveButtonText: {
     color: '#FFFFFF',

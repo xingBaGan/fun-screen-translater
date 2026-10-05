@@ -99,12 +99,28 @@ object MangaOcrProcessor {
     }
 
     // 3. 色彩反相扫描 (Invert Pass - 借鉴 overlay-translator 的 settings_preprocess_invert)
-    // 专门捕获黑底白字标语 (如 淫猥母子新シリーズご開帳♥)、深色框反相文字
+    // 专门捕获黑底白字标语 (如 淫猥母子新シリーズご開帳♥)、深色气泡、反相日漫文字
     var invertedBitmap: Bitmap? = null
     try {
       invertedBitmap = createInvertedBitmap(bitmap)
       val invertedLines = recognizeSingleBitmap(recognizer, invertedBitmap, 1.0f, 1.0f)
       allDetectedLines.addAll(invertedLines)
+
+      // 关键改进：针对黑底小字气泡（如 噂だと その教団），在放大尺度上也进行反相识别
+      if (shortSide < 1200) {
+        val upscaleFactor = min(2.5f, max(1.4f, 1300f / shortSide))
+        val upW = (bitmap.width * upscaleFactor).toInt()
+        val upH = (bitmap.height * upscaleFactor).toInt()
+        var upscaledInverted: Bitmap? = null
+        try {
+          upscaledInverted = Bitmap.createScaledBitmap(invertedBitmap, upW, upH, true)
+          val upInvertedLines = recognizeSingleBitmap(recognizer, upscaledInverted, upscaleFactor, upscaleFactor)
+          allDetectedLines.addAll(upInvertedLines)
+        } catch (e: Exception) {
+        } finally {
+          upscaledInverted?.recycle()
+        }
+      }
     } catch (e: Exception) {
     } finally {
       invertedBitmap?.recycle()
@@ -612,6 +628,17 @@ object MangaOcrProcessor {
     val yBottom = min(ra.bottom, rb.bottom)
     if (yBottom <= yTop) return true // 垂直方向无投影重叠，不能合并
 
+    // 检查文字所在背景的整体明暗度
+    val safeXa = ra.centerX().coerceIn(0, bitmap.width - 1)
+    val safeYa = ra.centerY().coerceIn(0, bitmap.height - 1)
+    val pA = bitmap.getPixel(safeXa, safeYa)
+    val lumA = (0.299 * Color.red(pA) + 0.587 * Color.green(pA) + 0.114 * Color.blue(pA)) / 255.0
+
+    // 如果本身处于深色/黑底气泡 (lumA < 0.45)，深色像素就是普通背景底色，不应作为气泡黑边阻断！
+    if (lumA < 0.45) {
+      return false
+    }
+
     // 在垂直重叠区域均匀采样 3 条横向测试线 (25%, 50%, 75%)
     val testYLines = listOf(
       yTop + (yBottom - yTop) / 4,
@@ -759,7 +786,51 @@ object MangaOcrProcessor {
 
     val luminance = (0.299 * avgR + 0.587 * avgG + 0.114 * avgB) / 255.0
     val bgHex = String.format("#%02X%02X%02X", avgR, avgG, avgB)
-    val textHex = if (luminance > 0.52) "#0F172A" else "#FFFFFF"
+
+    // 内部文字笔画像素采样提取真实颜色 (Text Stroke Color Extraction)
+    val innerMarginX = max(2, (box.width() * 0.15f).toInt())
+    val innerMarginY = max(2, (box.height() * 0.15f).toInt())
+    val innerLeft = box.left + innerMarginX
+    val innerRight = box.right - innerMarginX
+    val innerTop = box.top + innerMarginY
+    val innerBottom = box.bottom - innerMarginY
+
+    var strokeTotalR = 0
+    var strokeTotalG = 0
+    var strokeTotalB = 0
+    var strokeCount = 0
+
+    if (innerRight > innerLeft && innerBottom > innerTop) {
+      val stepX = max(1, (innerRight - innerLeft) / 16)
+      val stepY = max(1, (innerBottom - innerTop) / 16)
+      for (x in innerLeft until innerRight step stepX) {
+        if (x !in 0 until bitmap.width) continue
+        for (y in innerTop until innerBottom step stepY) {
+          if (y !in 0 until bitmap.height) continue
+          val p = bitmap.getPixel(x, y)
+          val pr = Color.red(p)
+          val pg = Color.green(p)
+          val pb = Color.blue(p)
+          val colorDiff = abs(pr - avgR) + abs(pg - avgG) + abs(pb - avgB)
+          // 与背景有显著反差，视为文字笔画像素
+          if (colorDiff > 60) {
+            strokeTotalR += pr
+            strokeTotalG += pg
+            strokeTotalB += pb
+            strokeCount++
+          }
+        }
+      }
+    }
+
+    val textHex = if (strokeCount >= 3) {
+      val tr = strokeTotalR / strokeCount
+      val tg = strokeTotalG / strokeCount
+      val tb = strokeTotalB / strokeCount
+      String.format("#%02X%02X%02X", tr, tg, tb)
+    } else {
+      if (luminance > 0.52) "#18181B" else "#F8FAFC"
+    }
 
     return ColorAnalysis(bgHex, textHex, luminance, isUniform)
   }
@@ -803,5 +874,69 @@ object MangaOcrProcessor {
 
     // 4. 其它一律作为画面嵌字/旁白处理 (free_text)
     return "free_text"
+  }
+
+  /**
+   * 针对用户点击未识别区域的局部高精 OCR 扫描
+   */
+  suspend fun processRegion(
+    bitmap: Bitmap,
+    cx: Int,
+    cy: Int,
+    radiusW: Int = 140,
+    radiusH: Int = 180,
+    lang: String = "ja"
+  ): Map<String, Any>? {
+    val cropLeft = max(0, cx - radiusW)
+    val cropTop = max(0, cy - radiusH)
+    val cropRight = min(bitmap.width, cx + radiusW)
+    val cropBottom = min(bitmap.height, cy + radiusH)
+    val cropW = cropRight - cropLeft
+    val cropH = cropBottom - cropTop
+
+    if (cropW < 20 || cropH < 20) return null
+
+    var croppedBitmap: Bitmap? = null
+    try {
+      croppedBitmap = Bitmap.createBitmap(bitmap, cropLeft, cropTop, cropW, cropH)
+      val results = processImage(croppedBitmap, lang)
+      if (results.isEmpty()) return null
+
+      // 找到离点击中心最近的识别块
+      var bestItem: Map<String, Any>? = null
+      var minDistance = Double.MAX_VALUE
+
+      for (item in results) {
+        val bMap = item["box"] as? Map<*, *> ?: continue
+        val bx = (bMap["x"] as? Number)?.toInt() ?: 0
+        val by = (bMap["y"] as? Number)?.toInt() ?: 0
+        val bw = (bMap["width"] as? Number)?.toInt() ?: 0
+        val bh = (bMap["height"] as? Number)?.toInt() ?: 0
+
+        // 映射回全局大图坐标
+        val globalX = cropLeft + bx
+        val globalY = cropTop + by
+        val gCenterX = globalX + bw / 2
+        val gCenterY = globalY + bh / 2
+
+        val dist = Math.hypot((gCenterX - cx).toDouble(), (gCenterY - cy).toDouble())
+        if (dist < minDistance) {
+          minDistance = dist
+          val mutable = item.toMutableMap()
+          mutable["box"] = mapOf(
+            "x" to globalX,
+            "y" to globalY,
+            "width" to bw,
+            "height" to bh
+          )
+          bestItem = mutable
+        }
+      }
+      return bestItem
+    } catch (e: Exception) {
+      return null
+    } finally {
+      croppedBitmap?.recycle()
+    }
   }
 }

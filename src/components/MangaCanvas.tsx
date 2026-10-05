@@ -12,12 +12,18 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { DisplayMode, MangaPage, TextBubble } from '@/types/manga';
-import { calculateOptimalFontSize } from '@/services/bubbleEngine';
+import {
+  calculateOptimalFontSize,
+  blendColorWithOpacity,
+  isColorLight,
+  resolveMangaTextColor,
+} from '@/services/bubbleEngine';
 
 interface Props {
   page: MangaPage;
   mode: DisplayMode;
   onSelectBubble: (bubble: TextBubble) => void;
+  onLongPressBubble?: (bubble: TextBubble) => void;
   onZoomChange?: (isZoomed: boolean) => void;
   onCanvasTap?: (coords: { x: number; y: number }) => void;
 }
@@ -30,6 +36,7 @@ export const MangaCanvas: React.FC<Props> = ({
   page,
   mode,
   onSelectBubble,
+  onLongPressBubble,
   onZoomChange,
   onCanvasTap,
 }) => {
@@ -440,6 +447,11 @@ export const MangaCanvas: React.FC<Props> = ({
     onSelectBubble(bubble);
   };
 
+  const handleBubbleLongPress = (bubble: TextBubble) => {
+    if (isInteracting.current) return;
+    onLongPressBubble?.(bubble);
+  };
+
   return (
     <View
       style={styles.container}
@@ -522,8 +534,16 @@ export const MangaCanvas: React.FC<Props> = ({
                 const height = bubble.box.height * scaleY;
                 const isVertical = bubble.direction === 'vertical';
 
-                const { fontSize, lineHeight } = calculateOptimalFontSize(
-                  bubble.targetText,
+                const displayText = (bubble.targetText || bubble.sourceText || '').trim();
+
+                const {
+                  fontSize,
+                  lineHeight,
+                  maxLines,
+                  paddingH,
+                  paddingV,
+                } = calculateOptimalFontSize(
+                  displayText,
                   bubble.box,
                   scaleX,
                   isVertical,
@@ -534,11 +554,29 @@ export const MangaCanvas: React.FC<Props> = ({
                 const isSfx = bubble.textType === 'sfx';
                 const isFreeText = bubble.textType === 'free_text';
 
+                // 背景色采样与半透明融合 (消除突兀死白膏药感，透出漫画纸质感与分镜网点)
+                const bgRaw = bubble.detectedBgColor || '#FFFFFF';
+                const isLightBg = isColorLight(bgRaw);
+                const patchOpacity = isTitle || isSfx ? 0.82 : 0.88;
+                const blendedBg = blendColorWithOpacity(bgRaw, patchOpacity);
+
+                // 智能匹配原作风格字体颜色 (黑色油墨/彩色艺术标题/醒目音效)
+                const displayTextColor = resolveMangaTextColor(bubble, isLightBg);
+
+                // 自适应圆角：避免死板药丸形状，贴合气泡边缘
+                const borderRadius = isTitle || isFreeText
+                  ? 4
+                  : Math.max(3, Math.min(8, Math.min(width, height) * 0.22));
+
+                const isTranslated = !!bubble.targetText?.trim();
+
                 return (
                   <TouchableOpacity
                     key={bubble.id}
                     activeOpacity={0.8}
                     onPress={() => handleBubblePress(bubble)}
+                    onLongPress={() => handleBubbleLongPress(bubble)}
+                    delayLongPress={350}
                     style={[
                       styles.replaceBubblePatch,
                       {
@@ -546,11 +584,15 @@ export const MangaCanvas: React.FC<Props> = ({
                         top,
                         width,
                         height,
-                        backgroundColor: bubble.detectedBgColor || '#FFFFFF',
+                        backgroundColor: blendedBg,
+                        borderRadius,
+                        paddingHorizontal: paddingH,
+                        paddingVertical: paddingV,
                       },
                       isTitle && styles.titlePatch,
                       isSfx && styles.sfxPatch,
                       isFreeText && styles.freeTextPatch,
+                      !isTranslated && styles.untranslatedReplacePatch,
                     ]}
                   >
                     <Text
@@ -559,13 +601,23 @@ export const MangaCanvas: React.FC<Props> = ({
                         {
                           fontSize,
                           lineHeight,
-                          color: bubble.detectedTextColor || '#0F172A',
+                          color: displayTextColor,
+                          opacity: 0.96, // 模拟微透油墨印刷质感
+                          // 微弱文字投影，增强复杂插画画面的可读性与漫画嵌字感
+                          textShadowColor: isLightBg
+                            ? 'rgba(255, 255, 255, 0.45)'
+                            : 'rgba(0, 0, 0, 0.45)',
+                          textShadowOffset: { width: 0, height: 0.5 },
+                          textShadowRadius: 1,
                         },
                         isTitle && styles.titleText,
                         isSfx && styles.sfxText,
                       ]}
+                      numberOfLines={maxLines}
+                      adjustsFontSizeToFit={true}
+                      minimumFontScale={0.65}
                     >
-                      {bubble.targetText}
+                      {displayText}
                     </Text>
                   </TouchableOpacity>
                 );
@@ -601,18 +653,22 @@ export const MangaCanvas: React.FC<Props> = ({
                   const isTitle = bubble.textType === 'title';
                   const isSfx = bubble.textType === 'sfx';
                   const isFreeText = bubble.textType === 'free_text';
+                  const isTranslated = !!bubble.targetText?.trim();
 
                   return (
                     <TouchableOpacity
                       key={bubble.id}
                       activeOpacity={0.7}
                       onPress={() => handleBubblePress(bubble)}
+                      onLongPress={() => handleBubbleLongPress(bubble)}
+                      delayLongPress={350}
                       style={[
                         styles.dotBadge,
                         { left, top },
                         isTitle && styles.titleDotBadge,
                         isSfx && styles.sfxDotBadge,
                         isFreeText && styles.freeTextDotBadge,
+                        !isTranslated && styles.untranslatedDotBadge,
                       ]}
                     >
                       <View
@@ -621,6 +677,7 @@ export const MangaCanvas: React.FC<Props> = ({
                           isTitle && styles.titlePulseRing,
                           isSfx && styles.sfxPulseRing,
                           isFreeText && styles.freeTextPulseRing,
+                          !isTranslated && styles.untranslatedPulseRing,
                         ]}
                       />
                       <Text style={styles.dotBadgeText}>
@@ -708,55 +765,50 @@ const styles = StyleSheet.create({
   canvasContent: {
     position: 'relative',
   },
-  // 模式 A 样式：消除原字并贴上译文
+  // 模式 A 样式：消除原字并贴上译文 (去生硬边框与阴影，自然融入漫画)
   replaceBubblePatch: {
     position: 'absolute',
-    borderRadius: 14,
     alignItems: 'center',
     justifyContent: 'center',
-    paddingHorizontal: 6,
-    paddingVertical: 4,
+    overflow: 'hidden',
+    borderWidth: 0,
+    elevation: 0,
+    shadowOpacity: 0,
+  },
+  untranslatedReplacePatch: {
     borderWidth: 1.5,
-    borderColor: 'rgba(15, 23, 42, 0.15)',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.1,
-    shadowRadius: 2,
-    elevation: 2,
+    borderStyle: 'dashed',
+    borderColor: 'rgba(245, 158, 11, 0.85)',
   },
   replaceBubbleText: {
     fontWeight: '700',
     textAlign: 'center',
-    letterSpacing: 0.2,
+    letterSpacing: 0.1,
+    includeFontPadding: false,
   },
   titlePatch: {
-    borderRadius: 8,
-    borderWidth: 2,
-    borderColor: 'rgba(234, 88, 12, 0.45)',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.25,
-    shadowRadius: 4,
-    elevation: 4,
+    borderWidth: 0,
+    elevation: 0,
+    shadowOpacity: 0,
   },
   titleText: {
     fontWeight: '900',
-    letterSpacing: 1.5,
+    letterSpacing: 0.8,
   },
   sfxPatch: {
-    borderRadius: 6,
-    borderWidth: 1.5,
-    borderColor: 'rgba(239, 68, 68, 0.5)',
-    borderStyle: 'dashed',
+    borderWidth: 0,
+    elevation: 0,
+    shadowOpacity: 0,
   },
   sfxText: {
-    fontWeight: '800',
+    fontWeight: '900',
     fontStyle: 'italic',
+    letterSpacing: 0.2,
   },
   freeTextPatch: {
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: 'rgba(148, 163, 184, 0.35)',
+    borderWidth: 0,
+    elevation: 0,
+    shadowOpacity: 0,
   },
   // 模式 B 样式：气泡角标小点
   dotBadge: {
@@ -788,6 +840,10 @@ const styles = StyleSheet.create({
   freeTextDotBadge: {
     backgroundColor: '#7C3AED',
   },
+  untranslatedDotBadge: {
+    backgroundColor: '#F59E0B',
+    borderColor: '#FEF3C7',
+  },
   dotPulseRing: {
     position: 'absolute',
     width: 34,
@@ -795,6 +851,9 @@ const styles = StyleSheet.create({
     borderRadius: 17,
     borderWidth: 1.5,
     borderColor: 'rgba(56, 189, 248, 0.6)',
+  },
+  untranslatedPulseRing: {
+    borderColor: 'rgba(245, 158, 11, 0.75)',
   },
   titlePulseRing: {
     width: 38,

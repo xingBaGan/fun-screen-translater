@@ -184,6 +184,29 @@ export async function recognizeImage(
 }
 
 /**
+ * 局部区域高精度 OCR 识别 (针对用户在画布点击未识别区域的人机协同点按交互)
+ */
+export async function recognizeRegion(
+  imageUri: string,
+  cx: number,
+  cy: number,
+  radiusW?: number,
+  radiusH?: number,
+  lang: string = 'ja'
+): Promise<OverlayBubbleItem | null> {
+  if (!NativeModule || typeof NativeModule.recognizeRegion !== 'function') {
+    return null;
+  }
+  try {
+    const res = await NativeModule.recognizeRegion(imageUri, cx, cy, radiusW, radiusH, lang);
+    return res || null;
+  } catch (err: any) {
+    console.warn('[ScreenOverlay] recognizeRegion 执行异常:', err);
+    return null;
+  }
+}
+
+/**
  * 监听悬浮球点击或屏幕捕获完成事件
  * 当在第三方应用（如 Tachiyomi、B站漫画、Kindle等）上轻触悬浮球时，会触发该事件并回传截屏图片 Uri 与尺寸
  */
@@ -219,3 +242,59 @@ export function addServiceStateListener(
 
   return NativeModule.addListener('onServiceStateChanged', listener);
 }
+
+const inMemoryStorage = new Map<string, string>();
+
+/**
+ * 读取本地持久化字符串配置（Android 端基于系统原生 SharedPreferences，Web 端基于 localStorage）
+ */
+export function getStringSetting(key: string, defaultValue: string = ''): string {
+  if (NativeModule && typeof NativeModule.getStringSetting === 'function') {
+    try {
+      const val = NativeModule.getStringSetting(key, defaultValue);
+      if (val !== undefined && val !== null) {
+        return String(val);
+      }
+    } catch (err) {
+      console.warn('[ScreenOverlay] 读取原生 SharedPreferences 失败:', err);
+    }
+  }
+
+  if (Platform.OS === 'web' && typeof localStorage !== 'undefined') {
+    try {
+      const val = localStorage.getItem(key);
+      return val !== null ? val : defaultValue;
+    } catch {
+      // ignore
+    }
+  }
+
+  return inMemoryStorage.has(key) ? inMemoryStorage.get(key)! : defaultValue;
+}
+
+/**
+ * 写入本地持久化字符串配置（Android 端基于系统原生 SharedPreferences，Web 端基于 localStorage）
+ */
+export function setStringSetting(key: string, value: string): boolean {
+  inMemoryStorage.set(key, value);
+
+  if (NativeModule && typeof NativeModule.setStringSetting === 'function') {
+    try {
+      return Boolean(NativeModule.setStringSetting(key, value));
+    } catch (err) {
+      console.warn('[ScreenOverlay] 写入原生 SharedPreferences 失败:', err);
+    }
+  }
+
+  if (Platform.OS === 'web' && typeof localStorage !== 'undefined') {
+    try {
+      localStorage.setItem(key, value);
+      return true;
+    } catch {
+      // ignore
+    }
+  }
+
+  return true;
+}
+

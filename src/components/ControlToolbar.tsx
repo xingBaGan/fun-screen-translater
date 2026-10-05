@@ -98,7 +98,7 @@ export const ControlToolbar: React.FC<Props> = ({
                 styles.translateButton,
                 isTranslatingPage && styles.translateButtonDisabled,
               ]}
-              onPress={onTranslatePage}
+              onPress={() => onTranslatePage?.()}
               disabled={isTranslatingPage}
               activeOpacity={0.75}
             >

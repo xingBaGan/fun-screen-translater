@@ -196,6 +196,60 @@ class ScreenTranslatorOverlayModule : Module() {
       }
     }
 
+    AsyncFunction("recognizeRegion") { imageUri: String, cx: Int, cy: Int, radiusW: Int?, radiusH: Int?, lang: String?, promise: Promise ->
+      val context = appContext.reactContext
+      if (context == null) {
+        promise.reject("CONTEXT_NULL", "React Context 不可用", null)
+        return@AsyncFunction
+      }
+
+      CoroutineScope(Dispatchers.IO).launch {
+        var bitmap: Bitmap? = null
+        try {
+          bitmap = try {
+            if (imageUri.startsWith("content://")) {
+              context.contentResolver.openInputStream(Uri.parse(imageUri))?.use {
+                BitmapFactory.decodeStream(it)
+              }
+            } else {
+              val cleanPath = if (imageUri.startsWith("file://")) {
+                Uri.parse(imageUri).path ?: imageUri.removePrefix("file://")
+              } else {
+                imageUri
+              }
+              val file = java.io.File(cleanPath)
+              if (file.exists()) {
+                BitmapFactory.decodeFile(file.absolutePath)
+              } else {
+                context.contentResolver.openInputStream(Uri.parse(imageUri))?.use {
+                  BitmapFactory.decodeStream(it)
+                }
+              }
+            }
+          } catch (e: Exception) { null }
+
+          if (bitmap == null) {
+            promise.resolve(null)
+            return@launch
+          }
+
+          val result = MangaOcrProcessor.processRegion(
+            bitmap,
+            cx,
+            cy,
+            radiusW ?: 140,
+            radiusH ?: 180,
+            lang ?: "ja"
+          )
+          promise.resolve(result)
+        } catch (e: Exception) {
+          promise.reject("REGION_OCR_ERROR", e.message ?: "局部OCR识别发生异常", e)
+        } finally {
+          try { bitmap?.recycle() } catch (e: Exception) {}
+        }
+      }
+    }
+
     Function("captureScreen") {
       if (ScreenCaptureOverlayService.isRunning()) {
         ScreenCaptureOverlayService.triggerScreenCapture()
@@ -212,6 +266,19 @@ class ScreenTranslatorOverlayModule : Module() {
       } else {
         false
       }
+    }
+
+    Function("getStringSetting") { key: String, defaultValue: String ->
+      val context = appContext.reactContext ?: return@Function defaultValue
+      val prefs = context.getSharedPreferences("screen_translator_prefs", Context.MODE_PRIVATE)
+      prefs.getString(key, defaultValue) ?: defaultValue
+    }
+
+    Function("setStringSetting") { key: String, value: String ->
+      val context = appContext.reactContext ?: return@Function false
+      val prefs = context.getSharedPreferences("screen_translator_prefs", Context.MODE_PRIVATE)
+      prefs.edit().putString(key, value).apply()
+      true
     }
   }
 }

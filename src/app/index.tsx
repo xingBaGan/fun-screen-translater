@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View,
   Text,
@@ -8,6 +8,7 @@ import {
   Platform,
   StatusBar as RNStatusBar,
   TouchableOpacity,
+  ActivityIndicator,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -17,12 +18,26 @@ import { DisplayMode, MangaPage, TextBubble, TranslatorConfig } from '@/types/ma
 import { MangaCanvas } from '@/components/MangaCanvas';
 import { ControlToolbar } from '@/components/ControlToolbar';
 import { BubbleDetailModal } from '@/components/BubbleDetailModal';
+import { BubbleActionMenuModal } from '@/components/BubbleActionMenuModal';
 import { SettingsModal } from '@/components/SettingsModal';
 import { FloatingOverlayController } from '@/components/FloatingOverlayController';
 import { SimulatedFloatingBall } from '@/components/SimulatedFloatingBall';
-import { captureScreen, recognizeImage, OverlayBubbleItem } from 'screen-translator-overlay';
-import { translateMangaBubblesBatch, scanMangaWithVision, translateBubbleText } from '@/services/translator';
+import {
+  captureScreen,
+  recognizeImage,
+  isServiceRunning as isOverlayServiceRunningCheck,
+  addServiceStateListener,
+  OverlayBubbleItem,
+} from 'screen-translator-overlay';
+import {
+  translateMangaBubblesBatch,
+  scanMangaWithVision,
+  translateBubbleText,
+  recognizeAndTranslateAtCoords,
+  ocrAtCoords,
+} from '@/services/translator';
 import { sortJapaneseReadingOrder } from '@/services/bubbleEngine';
+import { loadTranslatorConfig, saveTranslatorConfig } from '@/services/storage';
 
 export default function MangaTranslatorScreen() {
   const insets = useSafeAreaInsets();
@@ -42,10 +57,18 @@ export default function MangaTranslatorScreen() {
   const [isScanningVision, setIsScanningVision] = useState(false);
   const [isTranslatingPage, setIsTranslatingPage] = useState(false);
 
-  // 全屏仿真悬浮球状态
+  // 全屏仿真悬浮球状态与系统级服务状态（两者严格互斥）
   const [showSimulatedBall, setShowSimulatedBall] = useState(false);
+  const [isOverlayServiceRunning, setIsOverlayServiceRunning] = useState(false);
   const [simulatedBubbles, setSimulatedBubbles] = useState<OverlayBubbleItem[]>([]);
   const [isTranslatingCaptured, setIsTranslatingCaptured] = useState(false);
+
+  // 交互点长按弹框菜单状态
+  const [actionTargetBubble, setActionTargetBubble] = useState<TextBubble | null>(null);
+  const [isActionMenuVisible, setIsActionMenuVisible] = useState(false);
+
+  // 点击未识别区域即时局部识别状态
+  const [isRecognizingTap, setIsRecognizingTap] = useState(false);
 
   const [translatorConfig, setTranslatorConfig] = useState<TranslatorConfig>({
     provider: 'mock',
@@ -53,6 +76,38 @@ export default function MangaTranslatorScreen() {
     apiEndpoint: '',
     model: 'deepseek-flash',
   });
+
+  // 组件挂载时自动读取本地持久化存储的翻译配置
+  useEffect(() => {
+    let isMounted = true;
+    (async () => {
+      try {
+        const saved = await loadTranslatorConfig();
+        if (isMounted && saved) {
+          setTranslatorConfig(saved);
+        }
+      } catch (err) {
+        console.warn('[MangaTranslatorScreen] 加载本地配置异常:', err);
+      }
+    })();
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  // 监听原生悬浮窗服务运行状态：一旦原生系统悬浮球启动，强制互斥关闭应用内仿真球
+  useEffect(() => {
+    setIsOverlayServiceRunning(isOverlayServiceRunningCheck());
+    const sub = addServiceStateListener((event) => {
+      setIsOverlayServiceRunning(event.running);
+      if (event.running) {
+        setShowSimulatedBall(false);
+      }
+    });
+    return () => {
+      sub.remove();
+    };
+  }, []);
 
   const currentPage = pages[currentPageIndex] || pages[0];
 
@@ -104,7 +159,7 @@ export default function MangaTranslatorScreen() {
               sourceText: item.sourceText,
               targetText: '',
               detectedBgColor: item.detectedBgColor || '#FFFFFF',
-              detectedTextColor: item.detectedTextColor || '#0F172A',
+              detectedTextColor: item.detectedTextColor || '#18181B',
               fontSize: item.fontSize,
             }));
 
@@ -120,7 +175,7 @@ export default function MangaTranslatorScreen() {
 
         // 若当前未编译原生 APK 且 bubbles 为空，提供全量文本类型的演示数据匹配该漫画封面
         if (bubbles.length === 0) {
-          // 覆盖气泡、标题、旁白、拟声词全类型
+          // 覆盖气泡、标题、旁白、拟声词全类型，契合漫画原本字体风格色彩
           bubbles = [
             {
               id: 'c_b1',
@@ -136,7 +191,7 @@ export default function MangaTranslatorScreen() {
               sourceText: 'こんにちはぁ～♪',
               targetText: '你好呀～♪',
               detectedBgColor: '#FFFFFF',
-              detectedTextColor: '#0F172A',
+              detectedTextColor: '#18181B',
             },
             {
               id: 'c_b2',
@@ -152,7 +207,7 @@ export default function MangaTranslatorScreen() {
               sourceText: '今 幸せですか？',
               targetText: '你现在幸福吗？',
               detectedBgColor: '#FFFFFF',
-              detectedTextColor: '#0F172A',
+              detectedTextColor: '#BE185D',
             },
             {
               id: 'c_b3',
@@ -168,7 +223,7 @@ export default function MangaTranslatorScreen() {
               sourceText: 'はーい 今出ます～',
               targetText: '好—的，马上就来～',
               detectedBgColor: '#FFFFFF',
-              detectedTextColor: '#0F172A',
+              detectedTextColor: '#18181B',
             },
             {
               id: 'c_b4',
@@ -216,7 +271,7 @@ export default function MangaTranslatorScreen() {
               sourceText: '勧誘…',
               targetText: '劝诱…',
               detectedBgColor: 'rgba(255, 255, 255, 0.9)',
-              detectedTextColor: '#0F172A',
+              detectedTextColor: '#18181B',
             },
             {
               id: 'c_b7',
@@ -307,8 +362,14 @@ export default function MangaTranslatorScreen() {
   };
 
   // 一键重新翻译当前漫画页面（调用配置的 AI 大模型或离线模型）
-  const handleTranslatePage = async (overrideConfig?: TranslatorConfig) => {
-    const cfg = overrideConfig || translatorConfig;
+  const handleTranslatePage = async (overrideConfig?: any) => {
+    const isConfig =
+      overrideConfig &&
+      typeof overrideConfig === 'object' &&
+      'provider' in overrideConfig &&
+      typeof overrideConfig.provider === 'string';
+    const cfg: TranslatorConfig = isConfig ? overrideConfig : translatorConfig;
+
     if (isTranslatingPage) return;
     if (!currentPage.bubbles || currentPage.bubbles.length === 0) {
       Alert.alert('提示', '当前页面暂无识别到的文字气泡，无法执行翻译。');
@@ -328,8 +389,12 @@ export default function MangaTranslatorScreen() {
         )
       );
 
-      const providerLabel = cfg.provider === 'mock' ? '离线预置' : cfg.provider.toUpperCase();
-      const modelLabel = cfg.provider === 'deepseek' ? (cfg.model || 'deepseek-flash') : (cfg.model || '');
+      const provider = cfg?.provider || 'mock';
+      const providerLabel = provider === 'mock' ? '离线预置' : provider.toUpperCase();
+      const modelLabel =
+        provider === 'deepseek'
+          ? (cfg.model || 'deepseek-flash')
+          : (cfg?.model || '');
       Alert.alert(
         '🎉 AI 翻译完成',
         `已成功调用 ${providerLabel} ${modelLabel ? `(${modelLabel})` : ''} 完成当前页面全部 ${translatedBubbles.length} 处文字翻译！`
@@ -341,13 +406,21 @@ export default function MangaTranslatorScreen() {
     }
   };
 
-  // 设置保存回调：若配置了 API Key，友好询问是否立即重新翻译当前页面
-  const handleSaveConfig = (newConfig: TranslatorConfig, retranslateNow?: boolean) => {
+  // 设置保存回调：持久化存储至本地，并友好询问是否立即重新翻译当前页面
+  const handleSaveConfig = async (newConfig: TranslatorConfig, retranslateNow?: boolean) => {
     setTranslatorConfig(newConfig);
-    if (retranslateNow && newConfig.provider !== 'mock' && newConfig.apiKey) {
+
+    try {
+      await saveTranslatorConfig(newConfig);
+    } catch (err) {
+      console.warn('[MangaTranslatorScreen] 持久化保存配置失败:', err);
+    }
+
+    if (retranslateNow && newConfig?.provider && newConfig.provider !== 'mock' && newConfig.apiKey) {
+      const providerStr = (newConfig.provider || '').toUpperCase();
       Alert.alert(
-        '配置已更新',
-        `已切换为 ${newConfig.provider.toUpperCase()} 引擎 (${newConfig.model || '默认'})。\n\n是否立即使用该模型重新翻译当前页面？`,
+        '配置已持久化保存',
+        `已切换为 ${providerStr} 引擎 (${newConfig.model || '默认'})，配置已成功保存到本地存储，重新编译后依然有效。\n\n是否立即使用该模型重新翻译当前页面？`,
         [
           { text: '稍后手动点【AI翻译】', style: 'cancel' },
           {
@@ -356,6 +429,8 @@ export default function MangaTranslatorScreen() {
           },
         ]
       );
+    } else {
+      Alert.alert('配置已持久化保存', '翻译引擎与凭证已成功保存到本地，重新编译与重启后均自动读取。');
     }
   };
 
@@ -384,15 +459,89 @@ export default function MangaTranslatorScreen() {
     }
   };
 
-  // 画布点击未识别区域手动补全 (人机协同机制)
+  // 点击某个点增加小交互点，并自动 OCR 里面的文本（保持未翻译状态，不直接替换原文）
+  const handleAddInteractivePoint = async (coords: { x: number; y: number }) => {
+    const tempId = `point_${Date.now()}`;
+    const newOrderIndex = currentPage.bubbles.length + 1;
+
+    // 1. 立即在点击坐标生成交互点并呈现在画面上（即时交互反馈）
+    const initialBubble: TextBubble = {
+      id: tempId,
+      box: {
+        x: Math.max(0, coords.x - 45),
+        y: Math.max(0, coords.y - 65),
+        width: 90,
+        height: 130,
+      },
+      direction: 'vertical',
+      textType: 'bubble',
+      readingOrderIndex: newOrderIndex,
+      sourceText: '识别中...',
+      targetText: '',
+      detectedBgColor: '#1A1828',
+      detectedTextColor: '#F8FAFC',
+      notes: '点击增加的小交互点',
+    };
+
+    setPages((prev) =>
+      prev.map((p, idx) =>
+        idx === currentPageIndex
+          ? { ...p, bubbles: [...p.bubbles, initialBubble] }
+          : p
+      )
+    );
+
+    setIsRecognizingTap(true);
+    try {
+      // 2. 自动 OCR 该区域里面的文本
+      const ocred = await ocrAtCoords(
+        currentPage.imageUri,
+        currentPage.originalWidth,
+        currentPage.originalHeight,
+        coords,
+        translatorConfig,
+        currentPage.bubbles
+      );
+
+      const updatedBubble: TextBubble = {
+        ...initialBubble,
+        box: ocred.box,
+        direction: ocred.direction,
+        textType: ocred.textType,
+        sourceText: ocred.sourceText || '……',
+        detectedBgColor: ocred.detectedBgColor,
+        detectedTextColor: ocred.detectedTextColor,
+        targetText: '', // 保持未翻译，长按菜单选择翻译
+      };
+
+      setPages((prev) =>
+        prev.map((p, idx) =>
+          idx === currentPageIndex
+            ? {
+                ...p,
+                bubbles: p.bubbles.map((b) =>
+                  b.id === tempId ? updatedBubble : b
+                ),
+              }
+            : p
+        )
+      );
+    } catch (err: any) {
+      console.warn('局部 OCR 识别异常:', err);
+    } finally {
+      setIsRecognizingTap(false);
+    }
+  };
+
+  // 画布点击交互：点击已有小交互点查看详情，点击空白区域增加新交互点并自动 OCR 文本
   const handleCanvasTap = (coords: { x: number; y: number }) => {
-    // 检查点击位置是否已在某个气泡内
+    const pad = 18;
     const hitExisting = currentPage.bubbles.find((b) => {
       return (
-        coords.x >= b.box.x &&
-        coords.x <= b.box.x + b.box.width &&
-        coords.y >= b.box.y &&
-        coords.y <= b.box.y + b.box.height
+        coords.x >= b.box.x - pad &&
+        coords.x <= b.box.x + b.box.width + pad &&
+        coords.y >= b.box.y - pad &&
+        coords.y <= b.box.y + b.box.height + pad
       );
     });
 
@@ -401,106 +550,105 @@ export default function MangaTranslatorScreen() {
       return;
     }
 
-    Alert.alert(
-      '➕ 补充文本标注框',
-      `您点击了未识别区域 (质点坐标 X:${coords.x}, Y:${coords.y})，是否在此补充标注？`,
-      [
-        { text: '取消', style: 'cancel' },
-        {
-          text: '🎨 艺术大标题',
-          onPress: () => {
-            const newBubble: TextBubble = {
-              id: `manual_title_${Date.now()}`,
-              box: {
-                x: Math.max(0, coords.x - 120),
-                y: Math.max(0, coords.y - 40),
-                width: 240,
-                height: 80,
-              },
-              direction: 'horizontal',
-              textType: 'title',
-              readingOrderIndex: currentPage.bubbles.length + 1,
-              sourceText: '訪問姦誘',
-              furiganaCleanedText: 'ほうもんかんゆう',
-              targetText: '上门诱惑',
-              detectedBgColor: '#1E1B4B',
-              detectedTextColor: '#EA580C',
-              notes: '用户手动点击补充：封面艺术主标题',
-            };
-            setPages((prev) =>
-              prev.map((p, idx) =>
-                idx === currentPageIndex ? { ...p, bubbles: [...p.bubbles, newBubble] } : p
-              )
-            );
-            handleSelectBubble(newBubble);
-          },
-        },
-        {
-          text: '⚡ 拟声词 (SFX)',
-          onPress: () => {
-            const newBubble: TextBubble = {
-              id: `manual_sfx_${Date.now()}`,
-              box: {
-                x: Math.max(0, coords.x - 40),
-                y: Math.max(0, coords.y - 30),
-                width: 80,
-                height: 60,
-              },
-              direction: 'horizontal',
-              textType: 'sfx',
-              readingOrderIndex: currentPage.bubbles.length + 1,
-              sourceText: 'ガッ',
-              targetText: '咔！',
-              detectedBgColor: 'rgba(255, 255, 255, 0.9)',
-              detectedTextColor: '#DC2626',
-              notes: '用户手动点击补充：拟声特效词',
-            };
-            setPages((prev) =>
-              prev.map((p, idx) =>
-                idx === currentPageIndex ? { ...p, bubbles: [...p.bubbles, newBubble] } : p
-              )
-            );
-            handleSelectBubble(newBubble);
-          },
-        },
-        {
-          text: '💬 对白气泡',
-          onPress: () => {
-            const newBubble: TextBubble = {
-              id: `manual_bubble_${Date.now()}`,
-              box: {
-                x: Math.max(0, coords.x - 50),
-                y: Math.max(0, coords.y - 60),
-                width: 100,
-                height: 120,
-              },
-              direction: 'vertical',
-              textType: 'bubble',
-              readingOrderIndex: currentPage.bubbles.length + 1,
-              sourceText: 'こんにちは～',
-              targetText: '你好呀～',
-              detectedBgColor: '#FFFFFF',
-              detectedTextColor: '#0F172A',
-              notes: '用户手动点击补充：对白气泡',
-            };
-            setPages((prev) =>
-              prev.map((p, idx) =>
-                idx === currentPageIndex ? { ...p, bubbles: [...p.bubbles, newBubble] } : p
-              )
-            );
-            handleSelectBubble(newBubble);
-          },
-        },
-      ]
+    // 点击未识别区域：直接增加小交互点，自动 OCR 里面的文本
+    handleAddInteractivePoint(coords);
+  };
+
+  // 长按交互点：弹出操作弹框（有删除、翻译等选项）
+  const handleBubbleLongPress = (bubble: TextBubble) => {
+    setActionTargetBubble(bubble);
+    setIsActionMenuVisible(true);
+  };
+
+  // 长按菜单选项：翻译此点
+  const handleTranslateFromActionMenu = async (bubble: TextBubble) => {
+    try {
+      const targetText = await translateBubbleText(
+        bubble.sourceText,
+        translatorConfig,
+        bubble.textType
+      );
+      const updatedBubble: TextBubble = { ...bubble, targetText };
+      setPages((prev) =>
+        prev.map((p, idx) =>
+          idx === currentPageIndex
+            ? {
+                ...p,
+                bubbles: p.bubbles.map((b) =>
+                  b.id === bubble.id ? updatedBubble : b
+                ),
+              }
+            : p
+        )
+      );
+      Alert.alert('🎉 翻译完成', `原文: "${bubble.sourceText}"\n译文: "${targetText}"`);
+    } catch (err: any) {
+      Alert.alert('翻译失败', err?.message || '网络连接异常');
+    }
+  };
+
+  // 长按菜单选项：删除此交互点
+  const handleDeleteBubble = (bubble: TextBubble) => {
+    setPages((prev) =>
+      prev.map((p, idx) => {
+        if (idx !== currentPageIndex) return p;
+        const filtered = p.bubbles.filter((b) => b.id !== bubble.id);
+        const reindexed = filtered.map((b, i) => ({
+          ...b,
+          readingOrderIndex: i + 1,
+        }));
+        return { ...p, bubbles: reindexed };
+      })
     );
+    if (selectedBubble?.id === bubble.id) {
+      setSelectedBubble(null);
+      setIsDetailVisible(false);
+    }
+    Alert.alert('已删除', `小交互点 #${bubble.readingOrderIndex} 已成功删除。`);
+  };
+
+  // 长按菜单选项：重新 OCR 识别
+  const handleReOcrBubble = async (bubble: TextBubble) => {
+    try {
+      const cx = Math.round(bubble.box.x + bubble.box.width / 2);
+      const cy = Math.round(bubble.box.y + bubble.box.height / 2);
+      const ocred = await ocrAtCoords(
+        currentPage.imageUri,
+        currentPage.originalWidth,
+        currentPage.originalHeight,
+        { x: cx, y: cy },
+        translatorConfig,
+        currentPage.bubbles
+      );
+      const updatedBubble: TextBubble = {
+        ...bubble,
+        sourceText: ocred.sourceText || bubble.sourceText,
+        box: ocred.box,
+      };
+      setPages((prev) =>
+        prev.map((p, idx) =>
+          idx === currentPageIndex
+            ? {
+                ...p,
+                bubbles: p.bubbles.map((b) =>
+                  b.id === bubble.id ? updatedBubble : b
+                ),
+              }
+            : p
+        )
+      );
+      Alert.alert('OCR 重新识别完成', `识别日文: "${updatedBubble.sourceText}"`);
+    } catch (err: any) {
+      Alert.alert('重新识别失败', err?.message || 'OCR 无法识别该区域');
+    }
   };
 
   const getModeTip = () => {
     switch (mode) {
       case 'replace':
-        return '💡 模式 A【原位消字嵌字】：自动采样气泡底色擦除原文，动态计算字号填入译文（双指捏合缩放/双击放大）。';
+        return '💡 模式 A【原位消字嵌字】：自动采样气泡底色擦除原文，长按气泡可唤出翻译/删除菜单。';
       case 'dots':
-        return '💡 模式 B【气泡小点打点】：不破坏原图，在文本框质点中心生成小标，点击就近弹窗（支持双指缩放）。';
+        return '💡 模式 B【气泡小点打点】：点击空白处增加小交互点并自动OCR，长按小点可翻译或删除。';
       case 'slider':
         return '💡 【滑动对比】：左右拖拽中间滑块对比前后效果（支持双指捏合缩放）。';
       case 'original':
@@ -640,6 +788,7 @@ export default function MangaTranslatorScreen() {
               page={currentPage}
               mode={mode}
               onSelectBubble={handleSelectBubble}
+              onLongPressBubble={handleBubbleLongPress}
               onZoomChange={setIsCanvasZoomed}
               onCanvasTap={handleCanvasTap}
             />
@@ -659,7 +808,7 @@ export default function MangaTranslatorScreen() {
             onOpenSettings={() => setIsSettingsVisible(true)}
             onScanVision={handleScanVision}
             isScanningVision={isScanningVision}
-            onTranslatePage={handleTranslatePage}
+            onTranslatePage={() => handleTranslatePage()}
             isTranslatingPage={isTranslatingPage}
           />
         </>
@@ -673,6 +822,17 @@ export default function MangaTranslatorScreen() {
         onRetranslateBubble={handleRetranslateSingle}
       />
 
+      {/* 交互点长按选项操作菜单 (翻译、删除、重新OCR、详情) */}
+      <BubbleActionMenuModal
+        visible={isActionMenuVisible}
+        bubble={actionTargetBubble}
+        onClose={() => setIsActionMenuVisible(false)}
+        onTranslate={handleTranslateFromActionMenu}
+        onDelete={handleDeleteBubble}
+        onReOcr={handleReOcrBubble}
+        onViewDetail={handleSelectBubble}
+      />
+
       {/* 设置浮层 */}
       <SettingsModal
         visible={isSettingsVisible}
@@ -682,14 +842,26 @@ export default function MangaTranslatorScreen() {
       />
 
       {/* 应用内全屏仿真悬浮球（手指1:1精准跟手、绝不跳变、自动平滑吸附边缘） */}
-      {showSimulatedBall && (
+      {/* 互斥守护：当原生系统级悬浮球正在运行时，绝不渲染仿真球，从根本上防止双球重叠 */}
+      {showSimulatedBall && !isOverlayServiceRunning && (
         <SimulatedFloatingBall
           onCapture={() => {
             captureScreen();
           }}
           bubbles={simulatedBubbles}
           isProcessing={isTranslatingCaptured}
+          onClose={() => setShowSimulatedBall(false)}
         />
+      )}
+
+      {/* 识别并翻译中的全局轻量HUD遮罩 */}
+      {isRecognizingTap && (
+        <View style={styles.recognizingHud}>
+          <ActivityIndicator size="small" color="#FFFFFF" />
+          <Text style={styles.recognizingHudText}>
+            🔍 正在自动 OCR 提取该点文字...
+          </Text>
+        </View>
       )}
     </View>
   );
@@ -822,5 +994,28 @@ const styles = StyleSheet.create({
   },
   scrollContent: {
     paddingBottom: 24,
+  },
+  recognizingHud: {
+    position: 'absolute',
+    top: 70,
+    alignSelf: 'center',
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(15, 23, 42, 0.9)',
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 24,
+    gap: 8,
+    zIndex: 9999,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 4,
+    elevation: 6,
+  },
+  recognizingHudText: {
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontWeight: '600',
   },
 });

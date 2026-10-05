@@ -17,12 +17,14 @@ interface SimulatedFloatingBallProps {
   onCapture: () => void;
   bubbles: OverlayBubbleItem[];
   isProcessing?: boolean;
+  onClose?: () => void;
 }
 
 export function SimulatedFloatingBall({
   onCapture,
   bubbles,
   isProcessing = false,
+  onClose,
 }: SimulatedFloatingBallProps) {
   const insets = useSafeAreaInsets();
   const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
@@ -147,6 +149,17 @@ export function SimulatedFloatingBall({
           </ScrollView>
 
           <View style={styles.cardFooter}>
+            {onClose ? (
+              <TouchableOpacity
+                style={styles.btnCloseBall}
+                onPress={onClose}
+              >
+                <Ionicons name="eye-off-outline" size={14} color="#94A3B8" />
+                <Text style={styles.btnCloseBallText}>关闭仿真球</Text>
+              </TouchableOpacity>
+            ) : (
+              <View />
+            )}
             <TouchableOpacity
               style={styles.btnRetake}
               onPress={() => {
@@ -253,11 +266,23 @@ const styles = StyleSheet.create({
   },
   cardFooter: {
     flexDirection: 'row',
-    justifyContent: 'flex-end',
+    justifyContent: 'space-between',
+    alignItems: 'center',
     marginTop: 8,
     paddingTop: 8,
     borderTopWidth: 1,
     borderTopColor: '#334155',
+  },
+  btnCloseBall: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingVertical: 4,
+    paddingHorizontal: 8,
+  },
+  btnCloseBallText: {
+    color: '#94A3B8',
+    fontSize: 12,
   },
   btnRetake: {
     flexDirection: 'row',
